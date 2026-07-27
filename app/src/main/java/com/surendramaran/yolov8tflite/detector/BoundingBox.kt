@@ -1,4 +1,4 @@
-package com.surendramaran.yolov8tflite
+package com.surendramaran.Jeepqs.detector
 
 data class BoundingBox(
     val x1: Float,

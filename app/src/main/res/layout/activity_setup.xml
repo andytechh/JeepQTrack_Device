@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0a1628"
+    android:padding="16dp">
+
+    <!-- Title -->
+    <TextView
+        android:id="@+id/tvTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Device Setup"
+        android:textColor="#FFFFFF"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        android:layout_marginTop="32dp"/>
+
+    <TextView
+        android:id="@+id/tvSubtitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Configure your device role"
+        android:textColor="#94a3b8"
+        android:textSize="14sp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvTitle"
+        android:layout_marginTop="4dp"/>
+
+    <!-- Role Selection -->
+    <TextView
+        android:id="@+id/tvRoleLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Device Role"
+        android:textColor="#e2e8f0"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvSubtitle"
+        android:layout_marginTop="24dp"/>
+
+    <RadioGroup
+        android:id="@+id/rgRole"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvRoleLabel"
+        android:layout_marginTop="8dp">
+
+        <RadioButton
+            android:id="@+id/rbPrimary"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="PRIMARY"
+            android:textColor="#ffffff"
+            android:buttonTint="#0ea5e9"
+            android:padding="12dp"
+            android:background="@drawable/radio_button_bg"
+            android:checked="false"/>
+
+        <RadioButton
+            android:id="@+id/rbSecondary"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="SECONDARY"
+            android:textColor="#ffffff"
+            android:buttonTint="#0ea5e9"
+            android:padding="12dp"
+            android:background="@drawable/radio_button_bg"
+            android:checked="true"/>
+
+    </RadioGroup>
+
+    <!-- Door Selection -->
+    <TextView
+        android:id="@+id/tvDoorLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Door Position"
+        android:textColor="#e2e8f0"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/rgRole"
+        android:layout_marginTop="24dp"/>
+
+    <RadioGroup
+        android:id="@+id/rgDoor"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvDoorLabel"
+        android:layout_marginTop="8dp">
+
+        <RadioButton
+            android:id="@+id/rbFront"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="FRONT"
+            android:textColor="#ffffff"
+            android:buttonTint="#0ea5e9"
+            android:padding="12dp"
+            android:background="@drawable/radio_button_bg"
+            android:checked="true"/>
+
+        <RadioButton
+            android:id="@+id/rbRear"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="REAR"
+            android:textColor="#ffffff"
+            android:buttonTint="#0ea5e9"
+            android:padding="12dp"
+            android:background="@drawable/radio_button_bg"/>
+
+    </RadioGroup>
+
+    <!-- Jeep ID -->
+    <TextView
+        android:id="@+id/tvJeepIdLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Jeepney ID (UUID)"
+        android:textColor="#e2e8f0"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/rgDoor"
+        android:layout_marginTop="24dp"/>
+
+    <EditText
+        android:id="@+id/etJeepId"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Enter Jeep ID (e.g. 550e8400-e29b-41d4-a716-446655440000)"
+        android:textColorHint="#64748b"
+        android:textColor="#ffffff"
+        android:background="@android:drawable/editbox_background"
+        android:padding="12dp"
+        android:inputType="text"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvJeepIdLabel"
+        android:layout_marginTop="8dp"/>
+
+    <!-- Config Summary -->
+    <TextView
+        android:id="@+id/tvConfigSummary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Configuration Summary"
+        android:textColor="#94a3b8"
+        android:textSize="14sp"
+        android:padding="12dp"
+        android:background="@android:drawable/dialog_holo_light_frame"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/etJeepId"
+        android:layout_marginTop="16dp"/>
+
+    <!-- Save Button -->
+    <Button
+        android:id="@+id/btnSave"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Save Configuration"
+        android:backgroundTint="#0ea5e9"
+        android:textColor="#ffffff"
+        android:textSize="16sp"
+        android:padding="12dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvConfigSummary"
+        android:layout_marginTop="24dp"/>
+
+    <!-- Reset Button (Debug) -->
+    <Button
+        android:id="@+id/btnReset"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Reset Configuration"
+        android:backgroundTint="#ef4444"
+        android:textColor="#ffffff"
+        android:textSize="14sp"
+        android:padding="12dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/btnSave"
+        android:layout_marginTop="12dp"
+        android:visibility="gone"/>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

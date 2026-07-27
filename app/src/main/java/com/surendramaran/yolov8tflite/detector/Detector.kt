@@ -1,4 +1,4 @@
-package com.surendramaran.yolov8tflite
+package com.surendramaran.Jeepqs.detector
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -33,6 +33,12 @@ class Detector(
     private var numChannel = 0
     private var numElements = 0
 
+    // ✅ FIX: Region of Interest - only count inside jeepney
+    private val ROI_MIN_X = 0.08f
+    private val ROI_MAX_X = 0.92f
+    private val ROI_MIN_Y = 0.12f
+    private val ROI_MAX_Y = 0.88f
+
     private val imageProcessor = ImageProcessor.Builder()
         .add(NormalizeOp(INPUT_MEAN, INPUT_STANDARD_DEVIATION))
         .add(CastOp(INPUT_IMAGE_TYPE))
@@ -60,7 +66,6 @@ class Detector(
             tensorWidth = inputShape[1]
             tensorHeight = inputShape[2]
 
-            // If in case input shape is in format of [1, 3, ..., ...]
             if (inputShape[1] == 3) {
                 tensorWidth = inputShape[2]
                 tensorHeight = inputShape[3]
@@ -137,7 +142,7 @@ class Detector(
         val bestBoxes = bestBox(output.floatArray)
         inferenceTime = SystemClock.uptimeMillis() - inferenceTime
 
-        if (bestBoxes == null) {
+        if (bestBoxes == null || bestBoxes.isEmpty()) {
             detectorListener.onEmptyDetect()
             return
         }
@@ -163,20 +168,31 @@ class Detector(
                 arrayIdx += numElements
             }
 
-            if (maxConf > CONFIDENCE_THRESHOLD) {
+            // ✅ FIX: Only count persons
+            if (maxConf > CONFIDENCE_THRESHOLD && maxIdx >= 0 && maxIdx < labels.size) {
                 val clsName = labels[maxIdx]
-                val cx = array[c] // 0
-                val cy = array[c + numElements] // 1
+
+                // ✅ Only count "person" class
+                if (clsName != "person") continue
+
+                val cx = array[c]
+                val cy = array[c + numElements]
                 val w = array[c + numElements * 2]
                 val h = array[c + numElements * 3]
                 val x1 = cx - (w/2F)
                 val y1 = cy - (h/2F)
                 val x2 = cx + (w/2F)
                 val y2 = cy + (h/2F)
+
+                // ✅ FIX: Check bounds
                 if (x1 < 0F || x1 > 1F) continue
                 if (y1 < 0F || y1 > 1F) continue
                 if (x2 < 0F || x2 > 1F) continue
                 if (y2 < 0F || y2 > 1F) continue
+
+                // ✅ FIX: Only count if inside ROI (jeepney area)
+                if (cx < ROI_MIN_X || cx > ROI_MAX_X) continue
+                if (cy < ROI_MIN_Y || cy > ROI_MAX_Y) continue
 
                 boundingBoxes.add(
                     BoundingBox(
@@ -236,7 +252,7 @@ class Detector(
         private const val INPUT_STANDARD_DEVIATION = 255f
         private val INPUT_IMAGE_TYPE = DataType.FLOAT32
         private val OUTPUT_IMAGE_TYPE = DataType.FLOAT32
-        private const val CONFIDENCE_THRESHOLD = 0.3F
-        private const val IOU_THRESHOLD = 0.5F
+        private const val CONFIDENCE_THRESHOLD = 0.25F  // ✅ Lowered for better recall
+        private const val IOU_THRESHOLD = 0.45F         // ✅ Lowered for better separation
     }
 }

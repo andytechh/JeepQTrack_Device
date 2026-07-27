@@ -4,6 +4,21 @@
 
     <uses-feature android:name="android.hardware.camera" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--  GPS / Location -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!--  SMS (For notifications) -->
+    <!--    <uses-permission android:name="android.permission.SEND_SMS" />-->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Wake lock (Keep phone awake while counting) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="true"
@@ -15,22 +30,33 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.YOLOv8TfLite"
         tools:targetApi="31">
+
+        <!-- Launches first -->
         <activity
-            android:name=".MainActivity"
+            android:name=".activities.SetupActivity"
             android:exported="true">
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
         </activity>
+
+        <!-- Main Camera Screen -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false" />
 
         <uses-native-library
             android:name="libOpenCL.so"
             android:required="false"/>
+
         <uses-native-library
             android:name="libOpenCL-pixel.so"
             android:required="false" />
+
     </application>
 
 </manifest>
