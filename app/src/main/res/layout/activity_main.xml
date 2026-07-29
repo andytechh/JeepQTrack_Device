@@ -49,6 +49,7 @@
             android:orientation="horizontal"
             android:padding="14dp">
 
+            <!-- Left: Jeepney Info -->
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -58,7 +59,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Smart Queue"
+                    android:text="JeepQ Track"
                     android:textColor="#E0E0E0"
                     android:textSize="18sp"
                     android:textStyle="bold" />
@@ -105,12 +106,27 @@
 
             </LinearLayout>
 
+            <!-- Right: Role & Controls -->
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:gravity="end"
                 android:orientation="vertical">
+
+                <Button
+                    android:id="@+id/btnLogout"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:layout_marginTop="6dp"
+                    android:backgroundTint="#7F1D1D"
+                    android:text="Logout"
+                    android:textColor="#FFFFFF"
+                    android:textSize="10sp"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="4dp"
+                    android:gravity="center"
+                    app:cornerRadius="8dp" />
 
                 <TextView
                     android:id="@+id/roleText"
@@ -140,6 +156,9 @@
                     android:text="GPS: Searching..."
                     android:textColor="#78909C"
                     android:textSize="10sp" />
+
+                <!-- 👇 LOGOUT BUTTON -->
+
 
             </LinearLayout>
 
@@ -519,6 +538,17 @@
                                     android:text="📊 Status"
                                     android:textColor="#CE93D8"
                                     android:textSize="9sp" />
+                                <!-- Add this to extraControlsCard or as a test button -->
+                                <Button
+                                    android:id="@+id/btnTestNotification"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="40dp"
+                                    android:layout_marginTop="8dp"
+                                    android:backgroundTint="#8B5CF6"
+                                    android:text="🧪 Test Notification"
+                                    android:textColor="#FFFFFF"
+                                    android:textSize="12sp"
+                                    app:cornerRadius="8dp" />  
 
                             </LinearLayout>
                         </LinearLayout>

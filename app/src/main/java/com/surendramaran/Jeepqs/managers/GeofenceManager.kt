@@ -3,7 +3,6 @@ package com.surendramaran.Jeepqs.managers
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.util.Log
 import androidx.core.app.ActivityCompat
 import com.google.android.gms.location.*
 import com.surendramaran.Jeepqs.services.SMSService
@@ -16,17 +15,14 @@ class GeofenceManager(
     private val supabase: SupabaseService,
     private val jeepneyId: String,
     private val bracket: Int,
-    private val terminalId: Int, // 1 = Donsol, 2 = Daraga
+    private val terminalId: Int,
     private val onStatusChanged: (String) -> Unit
 ) {
 
     companion object {
-        private const val TAG = "GeofenceManager"
-
-        // Terminal locations
         private val TERMINALS = mapOf(
-            1 to Pair(12.9032, 123.59425),  // Donsol Terminal
-            2 to Pair(13.14769, 123.71216)   // Daraga Terminal
+            1 to Pair(12.9032, 123.59425),
+            2 to Pair(13.14769, 123.71216)
         )
 
         private val TERMINAL_NAMES = mapOf(
@@ -34,33 +30,26 @@ class GeofenceManager(
             2 to "Daraga Terminal"
         )
 
-        private const val GEOFENCE_RADIUS = 200.0 // meters
-        private const val LOADING_DURATION = 30L // minutes
-        private const val WAITING_TIMEOUT = 5L // minutes
+        private const val GEOFENCE_RADIUS = 200.0
+        private const val LOADING_DURATION = 30L
+        private const val WAITING_TIMEOUT = 5L
     }
 
     private val geofencingClient = LocationServices.getGeofencingClient(context)
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
+    private val smsService = SMSService(context, supabase)
+
     private var isGeofenceRegistered = false
     private var currentStatus = "inactive"
     private var isDataLoaded = false
 
-    // FIXED: Pass supabase to SMSService
-    private val smsService = SMSService(context, supabase)
+    private var cachedPlateNumber = "UNKNOWN"
+    private var cachedJeepName = ""
+    private var cachedDriverName = "Driver"
+    private var cachedOccupancy = 0
 
-    private var cachedPlateNumber: String = "UNKNOWN"
-    private var cachedJeepName: String = ""
-    private var cachedDriverName: String = "Driver"
-    private var cachedOccupancy: Int = 0
-
-    // Get terminal location
     private val terminalLatLng = TERMINALS[terminalId] ?: Pair(12.9032, 123.59425)
     private val terminalName = TERMINAL_NAMES[terminalId] ?: "Terminal $terminalId"
-
-    private fun getPlateNumber(): String = cachedPlateNumber
-    private fun getJeepName(): String = cachedJeepName
-    private fun getDriverName(): String = cachedDriverName
-    private fun getOccupancy(): Int = cachedOccupancy
 
     fun updateJeepneyData(plate: String, jeepName: String, driver: String, occupancy: Int) {
         cachedPlateNumber = plate
@@ -68,20 +57,16 @@ class GeofenceManager(
         cachedDriverName = driver
         cachedOccupancy = occupancy
         isDataLoaded = true
-        Log.d(TAG, "✅ Jeepney data updated for $terminalName: $jeepName ($plate)")
     }
 
     fun updateOccupancy(occupancy: Int) {
         cachedOccupancy = occupancy
-        Log.d(TAG, "✅ Occupancy updated: $occupancy")
-
-        // Check if occupancy exceeds 80% and send alert
-        if (occupancy >= 20) { // 20 out of 24 = 83%
+        if (occupancy >= 20) {
             smsService.notifyOccupancyAlert(
                 jeepneyId = jeepneyId,
-                plateNumber = getPlateNumber(),
-                jeepName = getJeepName(),
-                driverName = getDriverName(),
+                plateNumber = cachedPlateNumber,
+                jeepName = cachedJeepName,
+                driverName = cachedDriverName,
                 terminalName = terminalName,
                 occupancy = occupancy,
                 capacity = 24,
@@ -92,13 +77,9 @@ class GeofenceManager(
     }
 
     fun startGeofence() {
-        if (!hasLocationPermission()) {
-            Log.e(TAG, "❌ No location permission")
-            return
-        }
+        if (!hasLocationPermission()) return
 
         val (lat, lng) = terminalLatLng
-        Log.d(TAG, "📍 Starting geofence for $terminalName at ($lat, $lng)")
 
         val geofence = Geofence.Builder()
             .setRequestId("terminal_${terminalId}_geofence")
@@ -117,10 +98,9 @@ class GeofenceManager(
         geofencingClient.addGeofences(geofencingRequest, pendingIntent)
             .addOnSuccessListener {
                 isGeofenceRegistered = true
-                Log.d(TAG, "✅ Geofence registered for $terminalName")
             }
-            .addOnFailureListener { e ->
-                Log.e(TAG, "❌ Geofence failed for $terminalName: ${e.message}")
+            .addOnFailureListener {
+                isGeofenceRegistered = false
             }
     }
 
@@ -130,29 +110,23 @@ class GeofenceManager(
         geofencingClient.removeGeofences(pendingIntent)
         isGeofenceRegistered = false
         cancelAllTimers()
-        Log.d(TAG, "🛑 Geofence stopped for $terminalName")
     }
 
-    // ─── SIMULATE FOR TESTING ──────────────────────────────────────
+    // ─── SIMULATION METHODS ──────────────────────────────────────────
+
     fun simulateEnterTerminal() {
-        Log.d(TAG, "🔧 MANUAL: Simulating ENTER $terminalName")
         onEnterTerminal()
     }
 
     fun simulateExitTerminal() {
-        Log.d(TAG, "🔧 MANUAL: Simulating EXIT $terminalName")
         onExitTerminal()
     }
 
     fun simulateWaitingTimeout() {
-        Log.d(TAG, "🔧 MANUAL: Simulating WAITING TIMEOUT")
-        supabase.skipWaitingJeepney(jeepneyId) { success ->
-            Log.d(TAG, "Skip result: $success")
-        }
+        supabase.skipWaitingJeepney(jeepneyId) { }
     }
 
     fun simulateLoadingComplete() {
-        Log.d(TAG, "🔧 MANUAL: Simulating LOADING COMPLETE")
         onStatusChanged("loading_complete")
     }
 
@@ -161,56 +135,63 @@ class GeofenceManager(
     fun getTerminalId(): Int = terminalId
 
     // ─── ENTER TERMINAL ─────────────────────────────────────────────
-    private fun onEnterTerminal() {
-        Log.d(TAG, "🚪 Jeepney entered $terminalName - Bracket: $bracket")
 
+    private fun onEnterTerminal() {
         if (!isDataLoaded) {
-            Log.d(TAG, "⏳ Data not loaded yet, retrying...")
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 onEnterTerminal()
             }, 1000)
             return
         }
 
-        Log.d(TAG, "📊 CACHED DATA:")
-        Log.d(TAG, "   Plate: $cachedPlateNumber")
-        Log.d(TAG, "   JeepName: $cachedJeepName")
-        Log.d(TAG, "   Driver: $cachedDriverName")
-        Log.d(TAG, "   Occupancy: $cachedOccupancy")
-        Log.d(TAG, "   Terminal: $terminalName (ID: $terminalId)")
-
-        // Add to queue with terminal
         supabase.addToQueueWithBracketAndTerminal(
             jeepneyId = jeepneyId,
             bracket = bracket,
             terminalId = terminalId
         ) { position, status ->
             currentStatus = status
-            Log.d(TAG, "📋 Queue: Position $position, Status: $status")
 
-            // ─── NOTIFY ALL USERS ──────────────────────────────────────
-            // Notify all commuters and dispatchers about arrival
             smsService.notifyArrival(
                 jeepneyId = jeepneyId,
-                plateNumber = getPlateNumber(),
-                jeepName = getJeepName(),
-                driverName = getDriverName(),
+                plateNumber = cachedPlateNumber,
+                jeepName = cachedJeepName,
+                driverName = cachedDriverName,
                 terminalName = terminalName,
                 terminalId = terminalId,
                 bracket = bracket
             )
 
-            // Also send direct SMS to dispatcher
-            val dispatcherPhone = "+639918139617"
+            val dispatcherPhone = "+639244508563"
             smsService.sendArrivalNotification(
                 jeepneyId = jeepneyId,
-                plateNumber = getPlateNumber(),
-                jeepName = getJeepName(),
-                driverName = getDriverName(),
+                plateNumber = cachedPlateNumber,
+                jeepName = cachedJeepName,
+                driverName = cachedDriverName,
                 queuePosition = position,
                 terminalName = terminalName,
                 phoneNumber = dispatcherPhone
             )
+
+            supabase.getDriverIdFromJeepney(jeepneyId) { driverId ->
+                if (driverId != null) {
+                    supabase.getUserById(driverId) { user ->
+                        if (user != null) {
+                            smsService.notifySingleUser(
+                                userId = user.optString("id"),
+                                phoneNumber = user.optString("phone_number"),
+                                expoToken = user.optString("expo_push_token"),
+                                displayName = user.optString("display_name", "Driver"),
+                                jeepneyId = jeepneyId,
+                                plateNumber = cachedPlateNumber,
+                                jeepName = cachedJeepName,
+                                driverName = cachedDriverName,
+                                terminalName = terminalName,
+                                eventType = "arrival"
+                            )
+                        }
+                    }
+                }
+            }
 
             when (status) {
                 "loading" -> startLoadingTimer()
@@ -221,34 +202,30 @@ class GeofenceManager(
     }
 
     // ─── EXIT TERMINAL ─────────────────────────────────────────────
-    private fun onExitTerminal() {
-        Log.d(TAG, "🚪 Jeepney exited $terminalName")
 
+    private fun onExitTerminal() {
         supabase.removeFromQueue(jeepneyId) { success ->
             if (success) {
-                Log.d(TAG, "✅ Removed from queue")
                 currentStatus = "en_route"
                 onStatusChanged("en_route")
 
-                // ─── NOTIFY ALL USERS ──────────────────────────────────
                 smsService.notifyDeparture(
                     jeepneyId = jeepneyId,
-                    plateNumber = getPlateNumber(),
-                    jeepName = getJeepName(),
-                    driverName = getDriverName(),
+                    plateNumber = cachedPlateNumber,
+                    jeepName = cachedJeepName,
+                    driverName = cachedDriverName,
                     terminalName = terminalName,
                     terminalId = terminalId,
                     bracket = bracket
                 )
 
-                // Also send direct SMS to dispatcher
-                val dispatcherPhone = "+639918139617"
+                val dispatcherPhone = "+639244508563"
                 smsService.sendDispatchConfirmation(
                     jeepneyId = jeepneyId,
-                    plateNumber = getPlateNumber(),
-                    jeepName = getJeepName(),
-                    driverName = getDriverName(),
-                    occupancy = getOccupancy(),
+                    plateNumber = cachedPlateNumber,
+                    jeepName = cachedJeepName,
+                    driverName = cachedDriverName,
+                    occupancy = cachedOccupancy,
                     terminalName = terminalName,
                     phoneNumber = dispatcherPhone
                 )
@@ -258,59 +235,51 @@ class GeofenceManager(
     }
 
     // ─── TIMERS ─────────────────────────────────────────────────────
-    private fun startLoadingTimer() {
-        Log.d(TAG, "⏱️ Loading timer: $LOADING_DURATION minutes at $terminalName")
 
+    private fun startLoadingTimer() {
         supabase.updateStatus("loading") { success ->
-            Log.d(TAG, "Status updated to loading: $success")
             if (success) {
-                // ─── NOTIFY ALL USERS ──────────────────────────────────
                 smsService.notifyLoadingStarted(
                     jeepneyId = jeepneyId,
-                    plateNumber = getPlateNumber(),
-                    jeepName = getJeepName(),
-                    driverName = getDriverName(),
+                    plateNumber = cachedPlateNumber,
+                    jeepName = cachedJeepName,
+                    driverName = cachedDriverName,
                     terminalName = terminalName,
                     terminalId = terminalId,
                     bracket = bracket
                 )
 
-                // Also send direct SMS to dispatcher
                 smsService.sendLoadingNotification(
                     jeepneyId = jeepneyId,
-                    plateNumber = getPlateNumber(),
-                    jeepName = getJeepName(),
-                    driverName = getDriverName(),
+                    plateNumber = cachedPlateNumber,
+                    jeepName = cachedJeepName,
+                    driverName = cachedDriverName,
                     terminalName = terminalName,
                     duration = LOADING_DURATION,
-                    phoneNumber = "+639918139617"
+                    phoneNumber = "+639244508563"
                 )
             }
         }
 
         scheduler.schedule({
-            Log.d(TAG, "⏰ Loading complete at $terminalName! Ready to depart.")
-
-            // ─── NOTIFY ALL USERS ──────────────────────────────────
             smsService.notifyLoadingComplete(
                 jeepneyId = jeepneyId,
-                plateNumber = getPlateNumber(),
-                jeepName = getJeepName(),
-                driverName = getDriverName(),
+                plateNumber = cachedPlateNumber,
+                jeepName = cachedJeepName,
+                driverName = cachedDriverName,
                 terminalName = terminalName,
-                occupancy = getOccupancy(),
+                occupancy = cachedOccupancy,
                 terminalId = terminalId,
                 bracket = bracket
             )
 
-            // Also send direct SMS to dispatcher
             smsService.sendDepartureNotification(
                 jeepneyId = jeepneyId,
-                plateNumber = getPlateNumber(),
-                jeepName = getJeepName(),
-                driverName = getDriverName(),
+                plateNumber = cachedPlateNumber,
+                jeepName = cachedJeepName,
+                driverName = cachedDriverName,
                 terminalName = terminalName,
-                phoneNumber = "+639918139617"
+                phoneNumber = "+639244508563"
             )
 
             onStatusChanged("loading_complete")
@@ -318,55 +287,43 @@ class GeofenceManager(
     }
 
     private fun startWaitingTimer() {
-        Log.d(TAG, "⏱️ Waiting timer: $WAITING_TIMEOUT minutes at $terminalName")
-
-        supabase.updateStatus("waiting") { success ->
-            Log.d(TAG, "Status updated to waiting: $success")
-        }
+        supabase.updateStatus("waiting") { }
 
         scheduler.schedule({
-            Log.d(TAG, "⏰ Waiting timeout at $terminalName! Checking next in queue")
-
-            // Check if there's a higher priority jeepney
             supabase.getNextInQueue(terminalId, bracket) { nextJeepney ->
                 if (nextJeepney != null && nextJeepney.id != jeepneyId) {
-                    Log.d(TAG, "🔄 Higher priority jeepney found: ${nextJeepney.plateNumber}")
-
-                    // Notify driver about queue position change
-                    smsService.notifyQueueUpdate(
+                    smsService.sendQueueUpdate(
                         jeepneyId = jeepneyId,
-                        plateNumber = getPlateNumber(),
-                        jeepName = getJeepName(),
-                        driverName = getDriverName(),
+                        plateNumber = cachedPlateNumber,
+                        jeepName = cachedJeepName,
+                        driverName = cachedDriverName,
                         terminalName = terminalName,
                         newPosition = nextJeepney.queuePosition ?: 1,
-                        terminalId = terminalId,
-                        bracket = bracket
+                        phoneNumber = "+639244508563"
                     )
 
-                    // Move to waiting and let higher priority go first
                     supabase.skipWaitingJeepney(jeepneyId) { success ->
-                        Log.d(TAG, "Skip: $success")
-                        // Re-enter queue at the back
-                        supabase.addToQueueWithBracketAndTerminal(
-                            jeepneyId = jeepneyId,
-                            bracket = bracket,
-                            terminalId = terminalId
-                        ) { position, status ->
-                            Log.d(TAG, "Re-queued at position: $position")
-                            currentStatus = status
-                            if (status == "waiting") {
-                                startWaitingTimer()
+                        if (success) {
+                            supabase.addToQueueWithBracketAndTerminal(
+                                jeepneyId = jeepneyId,
+                                bracket = bracket,
+                                terminalId = terminalId
+                            ) { position, status ->
+                                currentStatus = status
+                                if (status == "waiting") {
+                                    startWaitingTimer()
+                                }
                             }
                         }
                     }
                 } else {
-                    // Still first in queue, keep waiting
                     startWaitingTimer()
                 }
             }
         }, WAITING_TIMEOUT, TimeUnit.MINUTES)
     }
+
+    // ─── HELPERS ─────────────────────────────────────────────────────
 
     private fun cancelAllTimers() {
         scheduler.shutdownNow()

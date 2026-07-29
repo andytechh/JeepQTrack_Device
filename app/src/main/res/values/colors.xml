@@ -9,5 +9,17 @@
     <color name="red">#F44336</color>
     <color name="nav_icon_color">#B0BEC5</color>
     <color name="nav_text_color">#B0BEC5</color>
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+
+    <!-- Role colors -->
+    <color name="primary_role">#FFB74D</color>
+    <color name="primary_role_bg">#2D2D2D</color>
+    <color name="secondary_role">#81C784</color>
+    <color name="secondary_role_bg">#1A2D1A</color>
+
 
 </resources>

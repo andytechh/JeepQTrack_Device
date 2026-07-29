@@ -18,17 +18,16 @@ class SetupActivity : AppCompatActivity() {
         binding = ActivitySetupBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Initialize DeviceConfig FIRST
+        // Initialize DeviceConfig
         DeviceConfig.init(this)
 
-        // DEBUG: Log all current prefs
+        // DEBUG: Log current config
         android.util.Log.d("SetupActivity", "=".repeat(60))
         android.util.Log.d("SetupActivity", "SETUP ACTIVITY STARTED")
-        android.util.Log.d("SetupActivity", "Current config:")
         android.util.Log.d("SetupActivity", DeviceConfig.getConfigSummary())
         android.util.Log.d("SetupActivity", "=".repeat(60))
 
-        // Check if already configured - if so, go to MainActivity
+        // Check if already configured
         if (DeviceConfig.isConfigured()) {
             val savedRole = DeviceConfig.getRole()
             android.util.Log.d("SetupActivity", "Already configured with role: $savedRole")
@@ -42,30 +41,19 @@ class SetupActivity : AppCompatActivity() {
         binding.rbSecondary.isChecked = true
         binding.rbFront.isChecked = true
 
-        // Set default Jeep ID hint
         binding.etJeepId.hint = "Enter Jeep ID (UUID)"
 
         // ─── UPDATE UI ON SELECTION CHANGE ──────────────────────────────
         binding.rbPrimary.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked) {
                 android.util.Log.d("SetupActivity", "Primary selected")
-                updateConfigDisplay()
             }
         }
 
         binding.rbSecondary.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked) {
                 android.util.Log.d("SetupActivity", "Secondary selected")
-                updateConfigDisplay()
             }
-        }
-
-        binding.rbFront.setOnCheckedChangeListener { _, _ ->
-            updateConfigDisplay()
-        }
-
-        binding.rbRear.setOnCheckedChangeListener { _, _ ->
-            updateConfigDisplay()
         }
 
         // ─── SAVE BUTTON ──────────────────────────────────────────────────
@@ -77,25 +65,7 @@ class SetupActivity : AppCompatActivity() {
         binding.btnReset.setOnClickListener {
             DeviceConfig.clearConfig()
             Toast.makeText(this, "Configuration reset", Toast.LENGTH_SHORT).show()
-            updateConfigDisplay()
         }
-
-        // Update initial display
-        updateConfigDisplay()
-    }
-
-    private fun updateConfigDisplay() {
-        val role = if (binding.rbPrimary.isChecked) "PRIMARY" else "SECONDARY"
-        val door = if (binding.rbFront.isChecked) "FRONT" else "REAR"
-        val jeepId = binding.etJeepId.text.toString().trim()
-
-        binding.tvConfigSummary.text = """
-            Configuration:
-            • Role: $role ${if (role == "PRIMARY") "⭐" else "🔹"}
-            • Door: $door
-            • Jeep ID: ${if (jeepId.isEmpty()) "Not set" else jeepId}
-            • Status: ${if (jeepId.isNotEmpty()) "✅ Ready" else "⚠️ Enter Jeep ID"}
-        """.trimIndent()
     }
 
     private fun saveConfiguration() {
@@ -117,7 +87,7 @@ class SetupActivity : AppCompatActivity() {
             return
         }
 
-        // Validate UUID format (if it looks like a UUID)
+        // Validate UUID format
         if (jeepId.length > 10 && !DeviceConfig.isValidUUID(jeepId)) {
             Toast.makeText(this, "Invalid Jeep ID format. Please enter a valid UUID.", Toast.LENGTH_LONG).show()
             binding.etJeepId.error = "Invalid UUID format"
@@ -141,7 +111,7 @@ class SetupActivity : AppCompatActivity() {
 
         // Check if save was successful
         if (savedRole != role) {
-            android.util.Log.e("SetupActivity", "❌ ROLE MISMATCH! Saved: $savedRole, Expected: $role")
+            android.util.Log.e("SetupActivity", " ROLE MISMATCH! Saved: $savedRole, Expected: $role")
             Toast.makeText(this, "Error: Role mismatch! Please try again.", Toast.LENGTH_LONG).show()
             return
         }
@@ -149,11 +119,11 @@ class SetupActivity : AppCompatActivity() {
         // ─── SUCCESS ──────────────────────────────────────────────────────
         Toast.makeText(
             this,
-            "✅ Configuration saved as $role",
+            " Configuration saved as $role",
             Toast.LENGTH_LONG
         ).show()
 
-        android.util.Log.d("SetupActivity", "✅ Configuration saved successfully!")
+        android.util.Log.d("SetupActivity", "Configuration saved successfully!")
 
         // ─── NAVIGATE ─────────────────────────────────────────────────────
         startActivity(Intent(this, MainActivity::class.java))

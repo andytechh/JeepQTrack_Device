@@ -138,7 +138,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val rearCount = results.count { it.cx > 0.6f }
 
         countPaint.color = Color.WHITE
-        countPaint.textSize = 50f
+        countPaint.textSize = 20f
         canvas.drawText(
             "Total: $passengerCount  F:$frontCount R:$rearCount",
             40f,
