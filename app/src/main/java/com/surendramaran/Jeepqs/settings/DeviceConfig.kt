@@ -15,6 +15,8 @@ object DeviceConfig {
     private const val KEY_JEEP_ID = "jeep_id"
     private const val KEY_PLATE_NUMBER = "plate_number"
     private const val KEY_JEEP_NAME = "jeep_name"
+    private const val KEY_TERMINAL_ID = "terminal_id"   // new
+    private const val KEY_BRACKET = "bracket"           // new
 
     private lateinit var prefs: SharedPreferences
     private var isInitialized = false
@@ -60,13 +62,8 @@ object DeviceConfig {
         Log.d(TAG, "📋 Role set to: $role")
     }
 
-    fun isPrimary(): Boolean {
-        return getRole() == "PRIMARY"
-    }
-
-    fun isSecondary(): Boolean {
-        return getRole() == "SECONDARY"
-    }
+    fun isPrimary(): Boolean = getRole() == "PRIMARY"
+    fun isSecondary(): Boolean = getRole() == "SECONDARY"
 
     // ─── DOOR ──────────────────────────────────────────────────────────
     fun getDoor(): String {
@@ -80,13 +77,8 @@ object DeviceConfig {
         Log.d(TAG, "🚪 Door set to: $door")
     }
 
-    fun isFrontDoor(): Boolean {
-        return getDoor() == "FRONT"
-    }
-
-    fun isRearDoor(): Boolean {
-        return getDoor() == "REAR"
-    }
+    fun isFrontDoor(): Boolean = getDoor() == "FRONT"
+    fun isRearDoor(): Boolean = getDoor() == "REAR"
 
     // ─── JEEP ID ───────────────────────────────────────────────────────
     fun getJeepId(): String? {
@@ -129,8 +121,37 @@ object DeviceConfig {
         Log.d(TAG, "🚌 Jeep name set to: $jeepName")
     }
 
+    // ─── TERMINAL & BRACKET (NEW) ──────────────────────────────────
+    fun getInt(key: String): Int? {
+        ensureInitialized()
+        return prefs.getInt(key, -1).takeIf { it != -1 }
+    }
+
+    fun getTerminalId(): Int? = getInt(KEY_TERMINAL_ID)
+    fun getBracket(): Int? = getInt(KEY_BRACKET)
+
+    fun setTerminalId(terminalId: Int) {
+        ensureInitialized()
+        prefs.edit().putInt(KEY_TERMINAL_ID, terminalId).apply()
+        Log.d(TAG, "🏷️ Terminal ID set to: $terminalId")
+    }
+
+    fun setBracket(bracket: Int) {
+        ensureInitialized()
+        prefs.edit().putInt(KEY_BRACKET, bracket).apply()
+        Log.d(TAG, "🔢 Bracket set to: $bracket")
+    }
+
     // ─── SAVE ALL CONFIG ─────────────────────────────────────────────
-    fun saveConfig(role: String, door: String, jeepId: String, plateNumber: String? = null, jeepName: String? = null) {
+    fun saveConfig(
+        role: String,
+        door: String,
+        jeepId: String,
+        plateNumber: String? = null,
+        jeepName: String? = null,
+        terminalId: Int? = null,
+        bracket: Int? = null
+    ) {
         ensureInitialized()
         prefs.edit()
             .putBoolean(KEY_CONFIGURED, true)
@@ -139,12 +160,10 @@ object DeviceConfig {
             .putString(KEY_JEEP_ID, jeepId)
             .apply()
 
-        if (plateNumber != null) {
-            setPlateNumber(plateNumber)
-        }
-        if (jeepName != null) {
-            setJeepName(jeepName)
-        }
+        plateNumber?.let { setPlateNumber(it) }
+        jeepName?.let { setJeepName(it) }
+        terminalId?.let { setTerminalId(it) }
+        bracket?.let { setBracket(it) }
 
         Log.d(TAG, "💾 Configuration saved:")
         Log.d(TAG, "  Role: $role")
@@ -152,6 +171,8 @@ object DeviceConfig {
         Log.d(TAG, "  Jeep ID: $jeepId")
         Log.d(TAG, "  Plate: $plateNumber")
         Log.d(TAG, "  Name: $jeepName")
+        Log.d(TAG, "  Terminal: $terminalId")
+        Log.d(TAG, "  Bracket: $bracket")
     }
 
     // ─── CLEAR CONFIG ─────────────────────────────────────────────────
@@ -164,6 +185,8 @@ object DeviceConfig {
             .putString(KEY_JEEP_ID, null)
             .putString(KEY_PLATE_NUMBER, null)
             .putString(KEY_JEEP_NAME, null)
+            .putInt(KEY_TERMINAL_ID, -1)
+            .putInt(KEY_BRACKET, -1)
             .apply()
         Log.d(TAG, "🗑️ Configuration cleared")
     }
@@ -179,6 +202,8 @@ object DeviceConfig {
             - Jeep ID: ${getJeepId() ?: "Not set"}
             - Plate: ${getPlateNumber() ?: "Not set"}
             - Name: ${getJeepName() ?: "Not set"}
+            - Terminal ID: ${getTerminalId() ?: "Not set"}
+            - Bracket: ${getBracket() ?: "Not set"}
         """.trimIndent()
     }
 
@@ -189,8 +214,6 @@ object DeviceConfig {
     }
 
     // ─── BACKWARDS COMPATIBILITY (Static functions with Context) ────
-    // Keep these for compatibility with existing code
-
     @Deprecated("Use getJeepId() instead", ReplaceWith("getJeepId()"))
     fun jeepId(context: Context): String? {
         init(context)

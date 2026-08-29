@@ -1,3 +1,4 @@
+// SMSService.kt – complete version
 package com.surendramaran.Jeepqs.services
 
 import android.content.Context
@@ -18,8 +19,8 @@ class SMSService(
 ) {
     companion object {
         private const val SMS_API_URL = "https://api.httpsms.com/v1/messages/send"
-        private const val SMS_API_KEY = "uk_aCh13hV8LlkN5l64mFXKQw1vn9ayYNZv4LNpmk5rzsp6f1Bzs8fUL2OGOJo1mL_5"
-        private const val SENDER_NUMBER = "+639938901689"
+        private const val SMS_API_KEY = "uk_Ol8Fny0jEw3W2dM6X1btPtALGraBjpqD_bNrIFSdLC6JFFDwGwC79FS_QW5ZpRex"
+        private const val SENDER_NUMBER = "+639244508563"
         private const val PUSH_API_URL = "https://exp.host/--/api/v2/push/send"
         private const val CONNECTION_TIMEOUT = 15L
         private const val WRITE_TIMEOUT = 15L
@@ -174,6 +175,14 @@ class SMSService(
                 JsonObject().apply {
                     addProperty("plate_number", plateNumber)
                     addProperty("terminal", terminalName)
+                }
+            )
+            "loading_alert" -> Triple(
+                "⏳ Loading Alert",
+                "Hello $userName!\nJeepney $displayName is still loading at $terminalName.\nDriver: $driverName\nAuto-departure in 5 minutes.",
+                JsonObject().apply {
+                    addProperty("plate_number", plateNumber)
+                    addProperty("loading_minutes", 25)
                 }
             )
             "departure" -> Triple(
@@ -762,6 +771,81 @@ class SMSService(
             Terminal: $terminalName
             New Queue Position: #$newPosition
             You are now closer to your turn!
+        """.trimIndent()
+        sendSms(phoneNumber, message)
+    }
+
+    // ─── LOADING ALERT (25-min) ──────────────────────────────────────
+
+    fun notifyLoadingAlert(
+        jeepneyId: String,
+        plateNumber: String,
+        jeepName: String,
+        driverName: String,
+        terminalName: String,
+        minutes: Long,
+        terminalId: Int,
+        bracket: Int
+    ) {
+        // Broadcast to all commuters at this terminal
+        notifyAllUsers(jeepneyId, plateNumber, jeepName, driverName, terminalName, terminalId, bracket, "loading_alert")
+
+        // Dispatcher-only alert (keep existing logic)
+        val displayName = if (jeepName.isNotEmpty()) "$jeepName ($plateNumber)" else plateNumber
+        val message = """
+            ⏳ LOADING ALERT
+            Jeepney: $displayName
+            Driver: $driverName
+            Terminal: $terminalName
+            Loading time: $minutes minutes
+            Auto-departure in ${30 - minutes} minutes.
+        """.trimIndent()
+
+        supabase.getDispatchers { users ->
+            if (users == null) return@getDispatchers
+            for (i in 0 until users.length()) {
+                try {
+                    val user = users.getJSONObject(i)
+                    val userId = user.optString("id")
+                    val phoneNumber = user.optString("phone_number")
+                    val expoToken = user.optString("expo_push_token", "")
+                    if (phoneNumber.isNullOrEmpty()) continue
+                    val jsonData = JsonObject().apply {
+                        addProperty("jeepney_id", jeepneyId)
+                        addProperty("plate_number", plateNumber)
+                        addProperty("loading_minutes", minutes)
+                    }
+                    supabase.insertNotificationAdmin(userId, "⏳ Loading Alert", message, "loading_alert", jsonData)
+                    if (expoToken.isNotEmpty()) {
+                        sendPushNotification(
+                            expoToken,
+                            "⏳ Loading Alert",
+                            message.take(100),
+                            mapOf("jeepney_id" to jeepneyId, "plate_number" to plateNumber, "type" to "loading_alert")
+                        )
+                    }
+                    sendSms(phoneNumber, message)
+                } catch (_: Exception) { }
+            }
+        }
+    }
+
+    fun sendLoadingAlertToDispatcher(
+        jeepneyId: String,
+        plateNumber: String,
+        jeepName: String,
+        driverName: String,
+        terminalName: String,
+        phoneNumber: String
+    ) {
+        val displayName = if (jeepName.isNotEmpty()) "$jeepName ($plateNumber)" else plateNumber
+        val message = """
+            ⏳ LOADING ALERT
+            Jeepney: $displayName
+            Driver: $driverName
+            Terminal: $terminalName
+            Loading time: 25 minutes
+            Auto-departure in 5 minutes.
         """.trimIndent()
         sendSms(phoneNumber, message)
     }

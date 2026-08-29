@@ -538,18 +538,6 @@
                                     android:text="📊 Status"
                                     android:textColor="#CE93D8"
                                     android:textSize="9sp" />
-                                <!-- Add this to extraControlsCard or as a test button -->
-                                <Button
-                                    android:id="@+id/btnTestNotification"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="40dp"
-                                    android:layout_marginTop="8dp"
-                                    android:backgroundTint="#8B5CF6"
-                                    android:text="🧪 Test Notification"
-                                    android:textColor="#FFFFFF"
-                                    android:textSize="12sp"
-                                    app:cornerRadius="8dp" />  
-
                             </LinearLayout>
                         </LinearLayout>
                     </LinearLayout>

@@ -8,9 +8,13 @@ import com.surendramaran.Jeepqs.services.SupabaseService
 class UploadManager(
     private val supabase: SupabaseService
 ) {
+    // Separate throttles — GPS and passenger-count uploads shouldn't
+    // compete for the same timer, or one starves the other.
+    private var lastPassengerUploadTime = 0L
+    private var lastGpsUploadTime = 0L
 
-    private var lastUploadTime = 0L
-    private val UPLOAD_INTERVAL = 3000L // 3 seconds
+    private val PASSENGER_UPLOAD_INTERVAL = 3000L  // 3 seconds — occupancy changes are bursty, keep this responsive
+    private val GPS_UPLOAD_INTERVAL = 10000L        // 10 seconds — live map only, not geofence-critical
 
     fun uploadPassengerData(
         data: PassengerManager.PassengerData,
@@ -26,8 +30,8 @@ class UploadManager(
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastUploadTime < UPLOAD_INTERVAL) return false
-        lastUploadTime = now
+        if (now - lastPassengerUploadTime < PASSENGER_UPLOAD_INTERVAL) return false
+        lastPassengerUploadTime = now
 
         val total = data.inside
         val front = data.frontBoarded
@@ -66,13 +70,16 @@ class UploadManager(
 
     fun uploadGps(lat: Double, lng: Double): Boolean {
         val now = System.currentTimeMillis()
-        if (now - lastUploadTime < UPLOAD_INTERVAL)
+        if (now - lastGpsUploadTime < GPS_UPLOAD_INTERVAL)
             return false
 
-        lastUploadTime = now
+        lastGpsUploadTime = now
 
         supabase.updateGps(lat, lng) { success ->
             Log.d("UploadManager", "GPS upload: $success")
+        }
+        supabase.sendGpsTracking(lat, lng, 0.0, 0.0) { success ->
+            Log.d("UploadManager", "GPS tracking log: $success")
         }
         return true
     }

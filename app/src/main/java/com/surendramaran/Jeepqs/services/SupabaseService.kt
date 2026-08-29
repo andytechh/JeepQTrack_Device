@@ -1,6 +1,8 @@
 package com.surendramaran.Jeepqs.services
 
 import android.content.Context
+import android.util.Log
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.surendramaran.Jeepqs.settings.DeviceConfig
 import okhttp3.*
@@ -11,6 +13,7 @@ import org.json.JSONObject
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class SupabaseService(
@@ -18,6 +21,7 @@ class SupabaseService(
 ) {
 
     companion object {
+        private const val TAG = "SupabaseService"
         private const val SUPABASE_URL = "https://mfztenjrwtfjsgebmvda.supabase.co"
         private const val SUPABASE_KEY = "sb_publishable_goOnWdfw3tacBtKYBE7ZFA_JLhgM9vb"
         private const val SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1menRlbmpyd3RmanNnZWJtdmRhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjcxOTgxMSwiZXhwIjoyMDk4Mjk1ODExfQ.Xs96smUK9DGSzDBrsehHaJKnYaSrDROJWMRnXVUM3jE"
@@ -43,9 +47,13 @@ class SupabaseService(
     private val adminClient: OkHttpClient by lazy {
         client.newBuilder().build()
     }
+    private fun utcDateFormat(): SimpleDateFormat =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
 
     private fun timestamp(): String {
-        return SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+        return utcDateFormat().format(Date())
     }
 
     private fun executeRequest(request: Request, callback: (Boolean) -> Unit) {
@@ -90,11 +98,17 @@ class SupabaseService(
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
+                Log.e(TAG, "❌ RPC '$function' network failure: ${e.message}", e)
                 onSuccess("[]")
             }
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     val body = response.body?.string() ?: "[]"
+                    if (!response.isSuccessful) {
+                        Log.e(TAG, "❌ RPC '$function' HTTP ${response.code}: $body")
+                    } else {
+                        Log.d(TAG, "✅ RPC '$function' HTTP ${response.code}: $body")
+                    }
                     onSuccess(body)
                 }
             }
@@ -183,6 +197,14 @@ class SupabaseService(
         patchJeepneys(json, callback)
     }
 
+    /**
+     * ⚠️ Only safe for statuses that don't care about queue_position
+     * ('arrived', 'inactive', etc). NEVER use this to move a jeepney OUT of
+     * 'loading'/'waiting' into 'en_route' or 'dispatched' — those transitions
+     * must clear queue_position in the same request or they'll violate
+     * jeepneys_enroute_queue_pos_check and silently fail. Use departJeepney()
+     * for that instead.
+     */
     fun updateStatus(status: String, callback: (Boolean) -> Unit) {
         val json = JsonObject().apply {
             addProperty("status", status)
@@ -190,16 +212,17 @@ class SupabaseService(
         }
         patchJeepneys(json, callback)
     }
-
     fun updateGps(latitude: Double, longitude: Double, callback: (Boolean) -> Unit) {
         val json = JsonObject().apply {
             addProperty("latitude", latitude)
             addProperty("longitude", longitude)
+            addProperty("current_latitude", latitude)
+            addProperty("current_longitude", longitude)
+            addProperty("last_location_update", timestamp())
             addProperty("updated_at", timestamp())
         }
         patchJeepneys(json, callback)
     }
-
     private fun patchJeepneys(json: JsonObject, callback: (Boolean) -> Unit) {
         if (jeepId.isNullOrEmpty()) {
             callback(false)
@@ -270,7 +293,10 @@ class SupabaseService(
         val bracket: Int,
         val capacity: Int,
         val occupancy: Int,
-        val driverName: String
+        val driverName: String,
+        val status: String,
+        val terminalId: Int,
+        val loadingStartedAtMillis: Long?
     )
 
     fun getJeepInfo(callback: (JeepneyInfo?) -> Unit) {
@@ -319,7 +345,7 @@ class SupabaseService(
         }
 
         val request = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/jeepneys?id=eq.$jeepId&select=plate_number,jeep_name,bracket,capacity,current_occupancy,driver_name,status")
+            .url("$SUPABASE_URL/rest/v1/jeepneys?id=eq.$jeepId&select=plate_number,jeep_name,bracket,capacity,current_occupancy,driver_name,status,terminal_id,loading_started_at")
             .get()
             .addHeader("apikey", SUPABASE_KEY)
             .addHeader("Authorization", "Bearer $SUPABASE_KEY")
@@ -331,13 +357,22 @@ class SupabaseService(
                     val array = JSONArray(body)
                     if (array.length() > 0) {
                         val obj = array.getJSONObject(0)
+                        val loadingStartedAtStr = obj.optString("loading_started_at", "")
+                        val loadingStartedAtMillis = if (loadingStartedAtStr.isNotEmpty()) {
+                            try {
+                                utcDateFormat().parse(loadingStartedAtStr)?.time
+                            } catch (_: Exception) { null }
+                        } else null
                         val info = JeepneyWithDriver(
                             plateNumber = obj.optString("plate_number", "UNKNOWN"),
                             jeepName = obj.optString("jeep_name", ""),
                             bracket = obj.optInt("bracket", 1),
                             capacity = obj.optInt("capacity", 24),
                             occupancy = obj.optInt("current_occupancy", 0),
-                            driverName = obj.optString("driver_name", "Not Assigned")
+                            driverName = obj.optString("driver_name", "Not Assigned"),
+                            status = obj.optString("status", "inactive"),
+                            terminalId = obj.optInt("terminal_id", 1),
+                            loadingStartedAtMillis = loadingStartedAtMillis
                         )
                         callback(info)
                         return@executeRequestWithBody
@@ -390,9 +425,11 @@ class SupabaseService(
                     val obj = array.getJSONObject(0)
                     callback(obj.optInt("queue_pos", 0), obj.optString("queue_status", "waiting"))
                 } else {
+                    Log.w(TAG, "add_to_queue_with_bracket_and_terminal returned empty array: $body")
                     callback(0, "inactive")
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "add_to_queue_with_bracket_and_terminal parse failed, body=$body", e)
                 callback(0, "inactive")
             }
         }
@@ -592,7 +629,7 @@ class SupabaseService(
     // ─── NOTIFICATIONS ───────────────────────────────────────────────
 
     fun insertNotificationAdmin(
-        userId: String,
+        userId: String? = null,
         title: String,
         message: String,
         type: String,
@@ -601,7 +638,7 @@ class SupabaseService(
     ) {
         try {
             val json = JsonObject().apply {
-                addProperty("user_id", userId)
+                if (userId != null) addProperty("user_id", userId) else add("user_id", JsonNull.INSTANCE)
                 addProperty("title", title)
                 addProperty("message", message)
                 addProperty("type", type)
@@ -672,5 +709,272 @@ class SupabaseService(
                 callback(null)
             }
         }
+    }
+
+    // ============================================================
+    // NEW METHODS FOR TRIP, GPS, STATUS, AND DEPARTURE
+    // ============================================================
+
+    fun createTrip(jeepneyId: String, route: String, passengers: Int, callback: (Boolean) -> Unit) {
+        val json = JsonObject().apply {
+            addProperty("jeepney_id", jeepneyId)
+            addProperty("route", route)
+            addProperty("status", "in_progress")
+            addProperty("passengers", passengers)
+            addProperty("started_at", timestamp())
+        }
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/trips")
+            .post(json.toString().toRequestBody(JSON))
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Prefer", "return=minimal")
+            .build()
+        executeRequest(request, callback)
+    }
+
+    fun getLatestGps(jeepneyId: String, callback: (Pair<Double, Double>?) -> Unit) {
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/gps_tracking?jeepney_id=eq.$jeepneyId&order=recorded_at.desc&limit=1&select=latitude,longitude")
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        executeRequestWithBody(request) { body ->
+            try {
+                if (!body.isNullOrEmpty()) {
+                    val array = JSONArray(body)
+                    if (array.length() > 0) {
+                        val obj = array.getJSONObject(0)
+                        val lat = obj.optDouble("latitude")
+                        val lon = obj.optDouble("longitude")
+                        if (!lat.isNaN() && !lon.isNaN()) {
+                            callback(Pair(lat, lon))
+                            return@executeRequestWithBody
+                        }
+                    }
+                }
+                callback(null)
+            } catch (_: Exception) {
+                callback(null)
+            }
+        }
+    }
+
+    /**
+     * Calls the 'depart_jeepney' RPC to set status to 'en_route', clear queue, and create a trip.
+     *
+     * IMPORTANT: this is the ONLY safe way to flip a jeepney to 'en_route' while it still
+     * holds a queue_position — the jeepneys_enroute_queue_pos_check constraint requires
+     * queue_position IS NULL whenever status = 'en_route'. Never PATCH status alone
+     * (see updateStatus()) for a jeepney that is currently 'loading'/queued, or the write
+     * will violate that constraint, silently fail, and the status will appear to "snap back"
+     * to 'loading' the next time it's polled.
+     *
+     * If the RPC itself doesn't confirm success (network hiccup, RPC missing, etc.) this
+     * falls back to a manual PATCH that clears status + queue_position in the SAME request
+     * so the constraint is never violated even in the fallback path.
+     */
+    fun departJeepney(jeepneyId: String, route: String = "Daraga → Donsol", callback: (Boolean) -> Unit) {
+        val json = JsonObject().apply {
+            addProperty("p_jeepney_id", jeepneyId)
+            addProperty("p_route", route)
+        }
+        executeRpc("depart_jeepney", json) { body ->
+            val rpcSucceeded = try {
+                body.lowercase().contains("true") || body.lowercase().contains("success")
+            } catch (_: Exception) {
+                false
+            }
+
+            if (rpcSucceeded) {
+                callback(true)
+            } else {
+                Log.w(TAG, "⚠️ depart_jeepney RPC didn't confirm success (body=$body) — applying manual fallback")
+                clearQueueAndSetEnRoute(jeepneyId, callback)
+            }
+        }
+    }
+
+    /**
+     * Removes a jeepney from the active queue because it left the terminal while
+     * still "waiting" (never made it to "loading"). Deliberately does NOT promote
+     * the next waiting jeepney — the loading slot at this terminal/bracket is
+     * still held by whichever jeepney is actually "loading" (if any), so
+     * promoting someone else here would create two "loading" jeepneys at once.
+     * The reorder_queue_after_departure trigger compacts everyone else's
+     * queue_position once this row's queue_position clears.
+     *
+     * IMPORTANT: this is NOT the same as skip_waiting_jeepney() — that RPC keeps
+     * status = 'waiting' and just pushes the jeep to the back of the queue (e.g.
+     * a dispatcher manually skipping its turn while it's still physically
+     * present). It must not be used when the jeepney has actually left, or the
+     * row stays "waiting" forever and can later be wrongly promoted to "loading".
+     */
+    fun leaveQueue(jeepneyId: String, callback: (Boolean) -> Unit) {
+        clearQueueAndSetEnRoute(jeepneyId, callback)
+    }
+
+    /**
+     * Atomically clears queue_position and flips status to 'en_route' in ONE
+     * patch. Must stay atomic — patching status and queue_position in separate
+     * requests re-opens the "flips to en_route then snaps back to loading" bug
+     * (jeepneys_enroute_queue_pos_check requires queue_position IS NULL whenever
+     * status = 'en_route').
+     */
+    private fun clearQueueAndSetEnRoute(jeepneyId: String, callback: (Boolean) -> Unit) {
+        val json = JsonObject().apply {
+            addProperty("status", "en_route")
+            add("queue_position", JsonNull.INSTANCE)
+            addProperty("departed_at", timestamp())
+            addProperty("updated_at", timestamp())
+        }
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/jeepneys?id=eq.$jeepneyId")
+            .patch(json.toString().toRequestBody(JSON))
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Prefer", "return=minimal")
+            .build()
+        executeRequest(request, callback)
+    }
+
+    fun getCurrentStatus(jeepneyId: String, callback: (String?) -> Unit) {
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/jeepneys?select=status&id=eq.$jeepneyId")
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        executeRequestWithBody(request) { body ->
+            try {
+                if (!body.isNullOrEmpty()) {
+                    val array = JSONArray(body)
+                    if (array.length() > 0) {
+                        val obj = array.getJSONObject(0)
+                        callback(obj.optString("status"))
+                        return@executeRequestWithBody
+                    }
+                }
+                callback(null)
+            } catch (_: Exception) {
+                callback(null)
+            }
+        }
+    }
+
+    fun getTerminalId(jeepneyId: String, callback: (Int?) -> Unit) {
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/jeepneys?select=terminal_id&id=eq.$jeepneyId")
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        executeRequestWithBody(request) { body ->
+            try {
+                if (!body.isNullOrEmpty()) {
+                    val array = JSONArray(body)
+                    if (array.length() > 0) {
+                        val obj = array.getJSONObject(0)
+                        callback(obj.optInt("terminal_id", -1).takeIf { it != -1 })
+                        return@executeRequestWithBody
+                    }
+                }
+                callback(null)
+            } catch (_: Exception) {
+                callback(null)
+            }
+        }
+    }
+
+    fun getLoadingStartedAt(jeepneyId: String, callback: (Long?) -> Unit) {
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/jeepneys?select=loading_started_at&id=eq.$jeepneyId")
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        executeRequestWithBody(request) { body ->
+            try {
+                if (!body.isNullOrEmpty()) {
+                    val array = JSONArray(body)
+                    if (array.length() > 0) {
+                        val obj = array.getJSONObject(0)
+                        val dateStr = obj.optString("loading_started_at")
+                        if (dateStr.isNotEmpty()) {
+                            val date = utcDateFormat().parse(dateStr)
+                            callback(date?.time)
+                            return@executeRequestWithBody
+                        }
+                    }
+                }
+                callback(null)
+            } catch (_: Exception) {
+                callback(null)
+            }
+        }
+    }
+
+    // ─── BLOCKING VERSIONS FOR WorkManager ─────────────────────────────
+
+    fun getCurrentStatusBlocking(jeepneyId: String): String? {
+        var result: String? = null
+        val latch = CountDownLatch(1)
+        getCurrentStatus(jeepneyId) { status ->
+            result = status
+            latch.countDown()
+        }
+        latch.await(5, TimeUnit.SECONDS)
+        return result
+    }
+
+    fun getTerminalIdBlocking(jeepneyId: String): Int? {
+        var result: Int? = null
+        val latch = CountDownLatch(1)
+        getTerminalId(jeepneyId) { id ->
+            result = id
+            latch.countDown()
+        }
+        latch.await(5, TimeUnit.SECONDS)
+        return result
+    }
+
+    fun getLatestGpsBlocking(jeepneyId: String): Pair<Double, Double>? {
+        var result: Pair<Double, Double>? = null
+        val latch = CountDownLatch(1)
+        getLatestGps(jeepneyId) { gps ->
+            result = gps
+            latch.countDown()
+        }
+        latch.await(5, TimeUnit.SECONDS)
+        return result
+    }
+
+    fun getLoadingStartedAtBlocking(jeepneyId: String): Long? {
+        var result: Long? = null
+        val latch = CountDownLatch(1)
+        getLoadingStartedAt(jeepneyId) { timestamp ->
+            result = timestamp
+            latch.countDown()
+        }
+        latch.await(5, TimeUnit.SECONDS)
+        return result
+    }
+
+    fun departJeepneyBlocking(jeepneyId: String, route: String = "Daraga → Donsol"): Boolean {
+        var result = false
+        val latch = CountDownLatch(1)
+        departJeepney(jeepneyId, route) { success ->
+            result = success
+            latch.countDown()
+        }
+        latch.await(5, TimeUnit.SECONDS)
+        return result
     }
 }

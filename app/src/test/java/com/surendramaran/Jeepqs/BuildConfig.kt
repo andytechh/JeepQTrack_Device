@@ -1,2 +1,3 @@
-package com.surendramaran.Jeepqs 
+package com.surendramaran.Jeepqs
 
+annotation class BuildConfig

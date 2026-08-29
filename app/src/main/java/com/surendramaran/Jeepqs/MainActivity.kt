@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -70,6 +72,15 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private var lastAlertTime: Long = 0L
     private val ALERT_INTERVAL = 30000L
 
+    // ─── STATUS POLLING ──────────────────────────────────────────────
+    private val statusCheckHandler = Handler(Looper.getMainLooper())
+    private val statusCheckRunnable = object : Runnable {
+        override fun run() {
+            checkStatusFromSupabase()
+            statusCheckHandler.postDelayed(this, 10000) // every 10 seconds
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -77,8 +88,9 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
         initializeApp()
         setupUI()
-        loadJeepInfo()
         setupGeofence()
+        loadJeepInfo()
+        startStatusPolling() // start polling for status updates
     }
 
     override fun onResume() {
@@ -89,6 +101,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopStatusPolling()
         cleanupResources()
     }
 
@@ -143,7 +156,12 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                 updateStatusUI(newStatus)
             }
         )
-        geofenceManager.startGeofence()
+        // NOTE: startGeofence() is deliberately NOT called here. loadJeepInfo()
+        // calls it once the real jeepney row (status/terminal_id/loading_started_at)
+        // has been fetched and syncState() has restored it — otherwise a fresh
+        // INITIAL_TRIGGER_ENTER fire could race ahead of syncState() and reset an
+        // in-progress "loading"/"waiting" jeepney back to "arrived". See
+        // loadJeepInfo() below.
     }
 
     private fun setupUI() {
@@ -181,10 +199,6 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private fun setupMenuButtons() {
         binding.btnLogout.setOnClickListener {
             performLogout()
-        }
-
-        binding.btnTestNotification.setOnClickListener {
-            sendTestNotification()
         }
 
         binding.btnSetTerminalHere.setOnClickListener {
@@ -244,6 +258,9 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         role = if (savedRole == "SECONDARY") DeviceRole.SECONDARY else DeviceRole.PRIMARY
         door = DeviceConfig.getDoor() ?: "REAR"
         jeepneyIdString = DeviceConfig.getJeepId() ?: "UNKNOWN"
+        // 🔥 Read terminal and bracket from config
+        terminalId = DeviceConfig.getTerminalId() ?: 1
+        jeepneyBracket = DeviceConfig.getBracket() ?: 1
     }
 
     private fun refreshDeviceConfig() {
@@ -256,16 +273,16 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         val doorStr = DeviceConfig.getDoor() ?: "REAR"
 
         if (roleStr == "PRIMARY") {
-            binding.roleText.text = "⭐ PRIMARY"
+            binding.roleText.text = "PRIMARY"
             binding.roleText.setTextColor(ContextCompat.getColor(this, R.color.primary_role))
             binding.roleText.setBackgroundColor(ContextCompat.getColor(this, R.color.primary_role_bg))
         } else {
-            binding.roleText.text = "🔹 SECONDARY"
+            binding.roleText.text = "SECONDARY"
             binding.roleText.setTextColor(ContextCompat.getColor(this, R.color.secondary_role))
             binding.roleText.setBackgroundColor(ContextCompat.getColor(this, R.color.secondary_role_bg))
         }
 
-        binding.doorText.text = if (doorStr == "FRONT") "🚪 Front Door" else "🚪 Rear Door"
+        binding.doorText.text = if (doorStr == "FRONT") "Front Door" else "Rear Door"
     }
 
     private fun updateServicesState() {
@@ -306,9 +323,24 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                         driver = info.driverName,
                         occupancy = info.occupancy
                     )
+                    geofenceManager.updateBracket(info.bracket)
+                    // Restore in-memory loading/waiting state from the real row
+                    // BEFORE registering geofences, so a fresh
+                    // INITIAL_TRIGGER_ENTER fire (if still physically inside a
+                    // terminal after a restart) sees the correct state via the
+                    // onEnterTerminal guard instead of resetting it to "arrived".
+                    geofenceManager.syncState(
+                        status = info.status,
+                        terminalId = info.terminalId,
+                        loadingStartedAtMillis = info.loadingStartedAtMillis
+                    )
                 } else {
                     binding.txtJeepName.text = "Unknown Jeep"
                 }
+                // Always start geofencing, even if the fetch failed — falls
+                // back to the default "inactive" in-memory state in that case,
+                // same as before this fetch existed.
+                geofenceManager.startGeofence()
             }
         }
     }
@@ -396,7 +428,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                 cameraProvider = cameraProviderFuture.get()
                 bindCameraUseCases()
                 isCameraStarted = true
-                Toast.makeText(this, " Camera started", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "📷 Camera started", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 Toast.makeText(this, "Camera error: ${e.message}", Toast.LENGTH_LONG).show()
             }
@@ -522,45 +554,35 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         }
     }
 
-    private fun sendTestNotification() {
-        val jeepneyId = DeviceConfig.getJeepId()
-        if (jeepneyId == null) {
-            Toast.makeText(this, "No jeepney ID found", Toast.LENGTH_SHORT).show()
-            return
-        }
+    // ─── STATUS POLLING ──────────────────────────────────────────────
 
-        supabase.getDriverIdFromJeepney(jeepneyId) { driverId ->
-            if (driverId == null) {
-                runOnUiThread {
-                    Toast.makeText(this, "No driver assigned to this jeepney", Toast.LENGTH_LONG).show()
-                }
-                return@getDriverIdFromJeepney
-            }
-
-            supabase.getUserById(driverId) { user ->
-                val phoneNumber = user?.optString("phone_number") ?: "+639123456789"
-
-                runOnUiThread {
-                    Toast.makeText(this, "Sending test notification to driver", Toast.LENGTH_SHORT).show()
-                }
-
-                smsService.testNotification(
-                    userId = driverId,
-                    phoneNumber = phoneNumber,
-                    expoToken = ""
-                )
+    private fun checkStatusFromSupabase() {
+        if (jeepneyIdString == "UNKNOWN") return
+        supabase.getCurrentStatus(jeepneyIdString) { status ->
+            if (status != null && status != currentStatus) {
+                currentStatus = status
+                runOnUiThread { updateStatusUI(status) }
             }
         }
+    }
+
+    private fun startStatusPolling() {
+        statusCheckHandler.post(statusCheckRunnable)
+    }
+
+    private fun stopStatusPolling() {
+        statusCheckHandler.removeCallbacks(statusCheckRunnable)
     }
 
     private fun updateStatusUI(status: String) {
         runOnUiThread {
             val statusText = when (status) {
-                "waiting" -> "⏳ Waiting"
+                "waiting" -> "Waiting"
                 "loading" -> "🔄 Loading..."
-                "en_route" -> "🚐 En Route"
+                "en_route" -> "En Route"
                 "arrived" -> "📍 Arrived"
-                "dispatched" -> "📋 Dispatched"
+                "dispatched" -> "Dispatched"
+                "inactive" -> "⏸️ Inactive"
                 else -> "⏸️ Inactive"
             }
             binding.txtJeepStatus.text = statusText

@@ -89,6 +89,7 @@ class GpsTracker(
         }
     }
 
+
     @RequiresPermission(allOf = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION])
     fun getLastKnownLocation(callback: (Double, Double) -> Unit) {
         if (!hasPermission()) return

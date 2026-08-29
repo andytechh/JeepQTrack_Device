@@ -48,6 +48,9 @@
         <activity
             android:name=".MainActivity"
             android:exported="false" />
+        <receiver
+            android:name=".services.GeofenceBroadcastReceiver"
+            android:exported="true" />
 
         <uses-native-library
             android:name="libOpenCL.so"
