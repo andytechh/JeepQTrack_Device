@@ -23,8 +23,11 @@ class SupabaseService(
     companion object {
         private const val TAG = "SupabaseService"
         private const val SUPABASE_URL = "https://mfztenjrwtfjsgebmvda.supabase.co"
+
         private const val SUPABASE_KEY = "sb_publishable_goOnWdfw3tacBtKYBE7ZFA_JLhgM9vb"
-        private const val SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1menRlbmpyd3RmanNnZWJtdmRhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjcxOTgxMSwiZXhwIjoyMDk4Mjk1ODExfQ.Xs96smUK9DGSzDBrsehHaJKnYaSrDROJWMRnXVUM3jE"
+
+        private val SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1menRlbmpyd3RmanNnZWJtdmRhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjcxOTgxMSwiZXhwIjoyMDk4Mjk1ODExfQ.Xs96smUK9DGSzDBrsehHaJKnYaSrDROJWMRnXVUM3jE"
+
         private const val CONNECTION_TIMEOUT = 30L
         private const val WRITE_TIMEOUT = 30L
         private const val READ_TIMEOUT = 30L
@@ -294,6 +297,7 @@ class SupabaseService(
         val capacity: Int,
         val occupancy: Int,
         val driverName: String,
+        val driverPhone: String,
         val status: String,
         val terminalId: Int,
         val loadingStartedAtMillis: Long?
@@ -338,6 +342,37 @@ class SupabaseService(
         }
     }
 
+    /**
+     * Resolves the phone number of the driver assigned to a given jeepney,
+     * via users.jeepney_id + role='driver' (see the users table schema —
+     * phone_number is nullable and unique among non-commuter roles). Returns
+     * null if no driver row is linked, or that driver has no phone on file.
+     */
+    fun getDriverPhoneForJeepney(jeepneyId: String, callback: (String?) -> Unit) {
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/users?jeepney_id=eq.$jeepneyId&role=eq.driver&select=phone_number")
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        executeRequestWithBody(request) { body ->
+            try {
+                if (!body.isNullOrEmpty()) {
+                    val array = JSONArray(body)
+                    if (array.length() > 0) {
+                        val phone = array.getJSONObject(0).optString("phone_number", "")
+                        callback(phone.takeIf { it.isNotEmpty() })
+                        return@executeRequestWithBody
+                    }
+                }
+                callback(null)
+            } catch (_: Exception) {
+                callback(null)
+            }
+        }
+    }
+
     fun getJeepneyWithDriver(callback: (JeepneyWithDriver?) -> Unit) {
         if (jeepId.isNullOrEmpty()) {
             callback(null)
@@ -363,18 +398,22 @@ class SupabaseService(
                                 utcDateFormat().parse(loadingStartedAtStr)?.time
                             } catch (_: Exception) { null }
                         } else null
-                        val info = JeepneyWithDriver(
-                            plateNumber = obj.optString("plate_number", "UNKNOWN"),
-                            jeepName = obj.optString("jeep_name", ""),
-                            bracket = obj.optInt("bracket", 1),
-                            capacity = obj.optInt("capacity", 24),
-                            occupancy = obj.optInt("current_occupancy", 0),
-                            driverName = obj.optString("driver_name", "Not Assigned"),
-                            status = obj.optString("status", "inactive"),
-                            terminalId = obj.optInt("terminal_id", 1),
-                            loadingStartedAtMillis = loadingStartedAtMillis
-                        )
-                        callback(info)
+
+                        getDriverPhoneForJeepney(jeepId!!) { driverPhone ->
+                            val info = JeepneyWithDriver(
+                                plateNumber = obj.optString("plate_number", "UNKNOWN"),
+                                jeepName = obj.optString("jeep_name", ""),
+                                bracket = obj.optInt("bracket", 1),
+                                capacity = obj.optInt("capacity", 24),
+                                occupancy = obj.optInt("current_occupancy", 0),
+                                driverName = obj.optString("driver_name", "Not Assigned"),
+                                driverPhone = driverPhone ?: "",
+                                status = obj.optString("status", "inactive"),
+                                terminalId = obj.optInt("terminal_id", 1),
+                                loadingStartedAtMillis = loadingStartedAtMillis
+                            )
+                            callback(info)
+                        }
                         return@executeRequestWithBody
                     }
                 }
@@ -514,7 +553,39 @@ class SupabaseService(
     }
 
     fun getCommuters(terminalId: Int, callback: (JSONArray?) -> Unit) {
-        getUsers(role = "commuter", terminalId = terminalId, callback = callback)
+        val json = JsonObject().apply {
+            addProperty("p_terminal_id", terminalId)
+        }
+        executeRpc("get_active_terminal_commuters", json) { body ->
+            try {
+                callback(JSONArray(body))
+            } catch (e: Exception) {
+                Log.e(TAG, "getCommuters parse failed, body=$body", e)
+                callback(null)
+            }
+        }
+    }
+    /**
+     * Called when a commuter taps "Notify me" on a terminal. Upserts a
+     * 3-hour subscription (re-tapping just refreshes the expiry) via the
+     * subscribe_to_terminal RPC — see terminal_subscriptions_migration.sql.
+     * This is the ONLY commuter subscription mechanism in the app; there is
+     * no per-jeepney subscription table, so getCommuters(terminalId) below
+     * is the single source of truth for all commuter notifications.
+     */
+    fun subscribeToTerminal(userId: String, terminalId: Int, callback: (Boolean) -> Unit) {
+        val json = JsonObject().apply {
+            addProperty("p_user_id", userId)
+            addProperty("p_terminal_id", terminalId)
+        }
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/rpc/subscribe_to_terminal")
+            .post(json.toString().toRequestBody(JSON))
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .addHeader("Content-Type", "application/json")
+            .build()
+        executeRequest(request, callback)
     }
 
     fun getDispatchers(callback: (JSONArray?) -> Unit) {
@@ -524,7 +595,9 @@ class SupabaseService(
     fun getDrivers(callback: (JSONArray?) -> Unit) {
         getUsers(role = "driver", callback = callback)
     }
-
+    fun getAdmins(callback: (JSONArray?) -> Unit) {
+        getUsers(role = "admin", callback = callback)
+    }
     fun getUserById(userId: String, callback: (JSONObject?) -> Unit) {
         val request = Request.Builder()
             .url("$SUPABASE_URL/rest/v1/users?select=id,email,phone_number,display_name,role,expo_push_token&id=eq.$userId")

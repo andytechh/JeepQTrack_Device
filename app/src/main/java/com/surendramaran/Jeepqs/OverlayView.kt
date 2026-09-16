@@ -17,19 +17,16 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
     private val bounds = Rect()
 
+    // These must stay in sync with PassengerCounter.LINE_OUTER / LINE_INNER.
+    // Drawn here purely for visual/debug purposes - the actual counting
+    // math lives in PassengerCounter and does not read these.
+    private val LINE_OUTER = 0.45f
+    private val LINE_INNER = 0.65f
+
     private val boxPaint = Paint().apply {
         color = ContextCompat.getColor(context!!, R.color.bounding_box_color)
         strokeWidth = 6f
         style = Paint.Style.STROKE
-    }
-
-    // ✅ Different colors for front/rear door
-    private fun getBoxColor(cx: Float): Int {
-        return if (cx < 0.4f) {
-            Color.parseColor("#00BFFF")  // Blue for front
-        } else {
-            Color.parseColor("#FF6B6B")  // Red for rear
-        }
     }
 
     private val textBackgroundPaint = Paint().apply {
@@ -51,8 +48,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         isAntiAlias = true
     }
 
-    private val linePaint = Paint().apply {
+    private val outerLinePaint = Paint().apply {
         color = Color.YELLOW
+        strokeWidth = 4f
+        style = Paint.Style.STROKE
+    }
+
+    private val innerLinePaint = Paint().apply {
+        color = Color.CYAN
         strokeWidth = 4f
         style = Paint.Style.STROKE
     }
@@ -81,7 +84,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val width = width.toFloat()
         val height = height.toFloat()
 
-        // ✅ Draw ROI (Jeepney area)
+        // Draw ROI (jeepney doorway area) - must stay in sync with
+        // Detector.ROI_MIN_X/MAX_X/MIN_Y/MAX_Y
         canvas.drawRect(
             width * 0.08f,
             height * 0.12f,
@@ -90,14 +94,25 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             roiPaint
         )
 
-        // ✅ Draw counting line
-        val lineY = height * 0.55f  // Was 0.65f
-        canvas.drawLine(0f, lineY, width, lineY, linePaint)
+        // Draw the two hysteresis lines that PassengerCounter actually uses.
+        // A track only counts as boarding once it moves from above the
+        // outer (yellow) line to below the inner (cyan) line, and vice
+        // versa for exiting - the gap between them is a "dead zone" where
+        // someone can stand/sit without triggering repeated counts.
+        val outerY = height * LINE_OUTER
+        val innerY = height * LINE_INNER
 
-        // Draw label for counting line
-        textPaint.color = Color.YELLOW
+        canvas.drawLine(0f, outerY, width, outerY, outerLinePaint)
+        canvas.drawLine(0f, innerY, width, innerY, innerLinePaint)
+
         textPaint.textSize = 30f
-        canvas.drawText("Counting Line", 20f, lineY - 20f, textPaint)
+
+        textPaint.color = Color.YELLOW
+        canvas.drawText("Outer (${(LINE_OUTER * 100).toInt()}%)", 20f, outerY - 12f, textPaint)
+
+        textPaint.color = Color.CYAN
+        canvas.drawText("Inner (${(LINE_INNER * 100).toInt()}%)", 20f, innerY - 12f, textPaint)
+
         textPaint.color = Color.WHITE
 
         // Draw all detections
@@ -107,13 +122,10 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             val right = box.x2 * width
             val bottom = box.y2 * height
 
-            // ✅ Color by door
-            boxPaint.color = getBoxColor(box.cx)
+            boxPaint.color = ContextCompat.getColor(context, R.color.bounding_box_color)
             canvas.drawRect(left, top, right, bottom, boxPaint)
 
-            // Door label
-            val doorLabel = if (box.cx < 0.4f) "F" else "R"
-            val label = "$doorLabel ${(box.cnf * 100).toInt()}%"
+            val label = "${(box.cnf * 100).toInt()}%"
 
             textPaint.getTextBounds(label, 0, label.length, bounds)
 
@@ -133,22 +145,17 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             )
         }
 
-        // ✅ Draw passenger count with door breakdown
-        val frontCount = results.count { it.cx < 0.4f }
-        val rearCount = results.count { it.cx > 0.6f }
-
+        // This device only ever watches one door (fixed per-device via
+        // DeviceConfig), so there is no meaningful front/rear split to
+        // compute from a single camera's detections - just show the raw
+        // count of people currently detected in this frame.
         countPaint.color = Color.WHITE
-        countPaint.textSize = 20f
+        countPaint.textSize = 32f
         canvas.drawText(
-            "Total: $passengerCount  F:$frontCount R:$rearCount",
+            "In frame: $passengerCount",
             40f,
             60f,
             countPaint
         )
-
-        // ✅ Draw line position info
-        countPaint.textSize = 30f
-        countPaint.color = Color.GRAY
-        canvas.drawText("Line: 55%", width - 150f, 60f, countPaint)
     }
 }

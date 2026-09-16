@@ -1,25 +1,59 @@
 <?xml version="1.0" encoding="utf-8"?>
+
 <resources>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
-    <color name="bounding_box_color">#234567</color>
-    <color name="gray">#999</color>
-    <color name="orange">#F93</color>
-    <color name="green">#4CAF50</color>
-    <color name="red">#F44336</color>
-    <color name="nav_icon_color">#B0BEC5</color>
-    <color name="nav_text_color">#B0BEC5</color>
-    <color name="purple_200">#FFBB86FC</color>
-    <color name="purple_500">#FF6200EE</color>
-    <color name="purple_700">#FF3700B3</color>
-    <color name="teal_200">#FF03DAC5</color>
-    <color name="teal_700">#FF018786</color>
 
-    <!-- Role colors -->
-    <color name="primary_role">#FFB74D</color>
-    <color name="primary_role_bg">#2D2D2D</color>
-    <color name="secondary_role">#81C784</color>
-    <color name="secondary_role_bg">#1A2D1A</color>
+    <!-- ========================================================= -->
+    <!-- JEEPQTRACK OCEAN PALETTE                                  -->
+    <!-- ========================================================= -->
 
+    <color name="clay_background">#DDF4FC</color>
+    <color name="clay_surface">#EAF9FE</color>
+    <color name="clay_surface_light">#F4FCFF</color>
+    <color name="clay_inner">#D5EEF7</color>
+    <color name="clay_border">#C4E4EF</color>
+
+    <color name="ocean_primary">#43B9E8</color>
+    <color name="ocean_primary_light">#8ADBF4</color>
+    <color name="ocean_primary_dark">#167BAA</color>
+    <color name="ocean_deep">#0B5F87</color>
+
+    <!-- Text -->
+
+    <color name="text_primary">#17445A</color>
+    <color name="text_secondary">#477386</color>
+    <color name="text_muted">#7FA2B1</color>
+    <color name="text_white">#FFFFFF</color>
+
+    <!-- Status -->
+
+    <color name="status_green">#43C98A</color>
+    <color name="status_green_light">#BDEFD8</color>
+    <color name="status_green_dark">#207C57</color>
+
+    <color name="orange_primary">#F5A65B</color>
+    <color name="orange_light">#FFE1BD</color>
+    <color name="orange_dark">#A96526</color>
+
+    <color name="red_primary">#E97878</color>
+    <color name="red_light">#FFD0D0</color>
+    <color name="red_dark">#9B4141</color>
+
+    <color name="blue_light">#D1F0FF</color>
+    <color name="blue_medium">#8DD8F4</color>
+
+    <!-- Existing status resources used by MainActivity -->
+
+    <color name="green">#43C98A</color>
+    <color name="red">#E97878</color>
+
+    <color name="primary_role">#167BAA</color>
+    <color name="primary_role_bg">#D1F0FF</color>
+
+    <color name="secondary_role">#A96526</color>
+    <color name="secondary_role_bg">#FFE1BD</color>
+    <color name="camera_placeholder">#D9F3FF</color>
+    <!-- Detection -->
+
+    <color name="bounding_box_color">#167BAA</color>
 
 </resources>

@@ -11,14 +11,30 @@ class CentroidTracker {
         var previousCx: Float,
         var previousCy: Float,
         var missed: Int = 0,
-        var box: BoundingBox? = null
+        var box: BoundingBox? = null,
+        // How many consecutive frames this track has been matched.
+        // Callers should require this to reach CONFIRM_FRAMES before
+        // trusting the track for counting - filters single-frame noise
+        // (a hand flashing through the ROI, a misfire, etc).
+        var confirmedFrames: Int = 1,
+        // True only on the frame this track was first created. Useful for
+        // callers that want to treat "first ever seen already deep inside
+        // the cabin" differently from "genuinely crossed the line".
+        var justCreated: Boolean = false
     )
 
     private val tracks = mutableListOf<Track>()
     private var nextId = 1
 
     private val MAX_DISTANCE = 0.08f
-    private val MAX_MISSED = 10
+    private val MAX_MISSED = 15 // raised from 10 - tolerate brief occlusion
+
+    companion object {
+        // Raised from 3 - if motion/blur is triggering brief false
+        // detections, requiring more consecutive matched frames filters
+        // more of them out before a track is trusted for counting.
+        const val CONFIRM_FRAMES = 5
+    }
 
     fun update(boxes: List<BoundingBox>): Map<Int, BoundingBox> {
         val result = mutableMapOf<Int, BoundingBox>()
@@ -46,6 +62,8 @@ class CentroidTracker {
                 bestTrack.cy = box.cy
                 bestTrack.missed = 0
                 bestTrack.box = box
+                bestTrack.confirmedFrames++
+                bestTrack.justCreated = false
                 matchedTracks.add(bestTrack)
                 result[bestTrack.id] = box
             } else {
@@ -55,7 +73,9 @@ class CentroidTracker {
                     cy = box.cy,
                     previousCx = box.cx,
                     previousCy = box.cy,
-                    box = box
+                    box = box,
+                    confirmedFrames = 1,
+                    justCreated = true
                 )
                 tracks.add(newTrack)
                 matchedTracks.add(newTrack)
