@@ -1,8 +1,19 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
+// Reads local.properties (project root, already gitignored — this is where
+// sdk.dir already lives) so secrets never get hardcoded into this file or
+// committed to source control.
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(FileInputStream(localPropertiesFile))
+}
 
 android {
     namespace = "com.surendramaran.Jeepqs"
@@ -16,6 +27,9 @@ android {
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        buildConfigField("String", "HTTPSMS_API_KEY_1", "\"${localProperties.getProperty("HTTPSMS_API_KEY_1", "")}\"")
+        buildConfigField("String", "HTTPSMS_API_KEY_2", "\"${localProperties.getProperty("HTTPSMS_API_KEY_2", "")}\"")
+        buildConfigField("String", "SUPABASE_SERVICE_ROLE_KEY", "\"${localProperties.getProperty("SUPABASE_SERVICE_ROLE_KEY", "")}\"")
     }
 
     buildTypes {
@@ -39,7 +53,7 @@ android {
     buildFeatures {
         viewBinding = true
         mlModelBinding = true
-
+        buildConfig = true
     }
 }
 

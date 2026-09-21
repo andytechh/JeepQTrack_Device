@@ -55,6 +55,11 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
     private var terminalId: Int = 1
 
+    // Last counts pushed to geofence/SMS/upload, so empty frames only
+    // trigger those when a count actually changed.
+    private var lastBoarded = -1
+    private var lastExited = -1
+
     // ============================================================
     // CAMERA
     // ============================================================
@@ -116,6 +121,14 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Ocean blue only for the top Android status/camera-cutout area.
+        // Navigation bar is intentionally left unchanged.
+        window.statusBarColor =
+            ContextCompat.getColor(
+                this,
+                R.color.ocean_primary_dark
+            )
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -753,6 +766,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
          * If the camera is already running, immediately
          * rebind CameraX using the new lens.
          */
+
         if (isCameraStarted) {
 
             try {
@@ -952,6 +966,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                      * Only mirror the front camera.
                      * Rear camera remains unmirrored.
                      */
+
                     if (
                         cameraFacing ==
                         CameraSelector.LENS_FACING_FRONT
@@ -1045,15 +1060,25 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     }
 
     // ============================================================
-    // YOLO DETECTOR CALLBACK
+    // YOLO DETECTOR CALLBACKS
     // ============================================================
 
     override fun onEmptyDetect() {
 
-        runOnUiThread {
+        // Empty frames MUST still go through the tracker (ages/prunes
+        // tracks and lets the counter finish a crossing) AND still
+        // refresh the UI.
+        val data =
+            passengerManager.processDetections(
+                emptyList(),
+                door
+            )
 
-            binding.overlay.clear()
-        }
+        applyPassengerData(
+            data = data,
+            inferenceTime = null,
+            fromDetection = false
+        )
     }
 
     override fun onDetect(
@@ -1067,14 +1092,33 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                 door
             )
 
+        applyPassengerData(
+            data = data,
+            inferenceTime = inferenceTime,
+            fromDetection = true
+        )
+    }
+
+    private fun applyPassengerData(
+        data: PassengerManager.PassengerData,
+        inferenceTime: Long?,
+        fromDetection: Boolean
+    ) {
+
         runOnUiThread {
 
-            binding.inferenceTime.text =
-                "${inferenceTime}ms / frame"
+            inferenceTime?.let {
+                binding.inferenceTime.text =
+                    "${it}ms / frame"
+            }
 
-            binding.overlay.setResults(
-                data.trackedBoxes
-            )
+            if (data.trackedBoxes.isEmpty()) {
+                binding.overlay.clear()
+            } else {
+                binding.overlay.setResults(
+                    data.trackedBoxes
+                )
+            }
 
             binding.txtInside.text =
                 data.inside.toString()
@@ -1085,32 +1129,43 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
             binding.txtExited.text =
                 data.exited.toString()
 
-            val available =
+            binding.txtAvailable.text =
                 (jeepneyCapacity - data.inside)
                     .coerceAtLeast(0)
-
-            binding.txtAvailable.text =
-                available.toString()
+                    .toString()
 
             updateOccupancyProgress(
                 data.inside
             )
         }
 
-        geofenceManager.updateOccupancy(
-            data.inside
-        )
+        // Push to geofence / SMS alert / Supabase whenever a count
+        // changed, and keep the every-detection behaviour for real
+        // detections.
+        val changed =
+            data.boarded != lastBoarded ||
+                    data.exited != lastExited
 
-        checkOccupancyAlert(
-            data.inside
-        )
+        lastBoarded = data.boarded
+        lastExited = data.exited
 
-        uploadManager.uploadPassengerData(
-            data,
-            role,
-            door,
-            currentStatus
-        )
+        if (changed || fromDetection) {
+
+            geofenceManager.updateOccupancy(
+                data.inside
+            )
+
+            checkOccupancyAlert(
+                data.inside
+            )
+
+            uploadManager.uploadPassengerData(
+                data,
+                role,
+                door,
+                currentStatus
+            )
+        }
     }
 
     // ============================================================
@@ -1208,25 +1263,18 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                     "+639123456789"
 
                 smsService.sendOccupancyAlert(
-
                     jeepneyId =
                         jeepneyIdString,
-
                     plateNumber =
                         jeepneyPlateNumber,
-
                     jeepName =
                         jeepneyName,
-
                     driverName =
                         jeepneyDriverName,
-
                     occupancy =
                         total,
-
                     capacity =
                         capacity,
-
                     phoneNumber =
                         dispatcherPhone
                 )
@@ -1348,27 +1396,37 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private fun cleanupResources() {
 
         try {
+
             detector?.close()
+
         } catch (_: Exception) {
         }
 
         try {
+
             gpsTracker.stopTracking()
+
         } catch (_: Exception) {
         }
 
         try {
+
             geofenceManager.stopGeofence()
+
         } catch (_: Exception) {
         }
 
         try {
+
             cameraProvider?.unbindAll()
+
         } catch (_: Exception) {
         }
 
         try {
+
             cameraExecutor.shutdown()
+
         } catch (_: Exception) {
         }
     }

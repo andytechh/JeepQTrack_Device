@@ -1,5 +1,6 @@
 package com.surendramaran.Jeepqs.managers
 
+import android.util.Log
 import com.surendramaran.Jeepqs.detector.BoundingBox
 import com.surendramaran.Jeepqs.tracking.CentroidTracker
 import com.surendramaran.Jeepqs.tracking.PassengerCounter
@@ -9,6 +10,10 @@ class PassengerManager {
     private val tracker = CentroidTracker()
     private val passengerCounter = PassengerCounter()
 
+    /**
+     * Call on EVERY frame - pass emptyList() when nothing was detected so the
+     * tracker can age/prune tracks and the counter can finish crossings.
+     */
     fun processDetections(
         boundingBoxes: List<BoundingBox>,
         door: String
@@ -18,6 +23,8 @@ class PassengerManager {
 
         // 2. Update passenger counter with tracked data
         passengerCounter.update(tracker.getTracks(), door)
+
+        Log.d("DET", "boxes=${boundingBoxes.size} tracks=${tracker.getTracks().size} boarded=${passengerCounter.boarded} exited=${passengerCounter.exited}")
 
         // 3. Return passenger data
         return PassengerData(
@@ -33,6 +40,7 @@ class PassengerManager {
     }
 
     fun reset() {
+        tracker.clear()
         passengerCounter.reset()
     }
 

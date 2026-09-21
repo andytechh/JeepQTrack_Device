@@ -1,18 +1,56 @@
 package com.surendramaran.Jeepqs.tracking
 
 import android.util.Log
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
+/**
+ * Counts boarding/exiting.
+ *
+ * Position "p" runs 0..1 along the walking direction: 0 = OUTSIDE, 1 = INSIDE.
+ *
+ * A count needs a real ORIGIN: the track must have been clearly seen on one
+ * side first (outsideSeen / insideSeen). A track that is born in the middle
+ * band, or as a huge box directly under the camera, has no origin and can
+ * NOT count in either direction. (The previous version let such tracks
+ * count whichever way they drifted next - that produced phantom exits.)
+ *
+ * Two ways to count:
+ *  1. CROSSING: seen outside, now clearly inside  -> BOARD (mirror for EXIT).
+ *  2. LOST AT DOOR: the camera often cannot see a person directly under it.
+ *     If a track that came from one side reaches the centre and is then lost
+ *     for LOST_FRAMES frames, count the passage in that direction.
+ */
 class PassengerCounter {
 
-    private val countedBoarded = mutableSetOf<Int>()
-    private val countedExited = mutableSetOf<Int>()
+    // ------------------------------------------------------------------
+    // CALIBRATION
+    // Phone top toward jeep, bottom toward outside, walking up/down the image:
+    //   TRAVEL_ALONG_Y = true, OUTSIDE_IS_LOW = false
+    // ------------------------------------------------------------------
+    private val TRAVEL_ALONG_Y = true
+    private val OUTSIDE_IS_LOW = false
+
+    private val LINE = 0.50f
+    private val HYSTERESIS = 0.03f      // must be this far past the line to cross
+    private val ORIGIN_MARGIN = 0.05f   // how far to a side counts as "seen there"
+    private val CENTER_BAND = 0.20f     // |p - LINE| within this = "at the door"
+    private val GIANT_SIZE = 0.85f      // box bigger than this = centre unreliable
+    private val LOST_FRAMES = 4         // frames missing before "lost at door" rule
+
+    private class State {
+        var lo = 1e9f
+        var hi = -1e9f
+        var centerReached = false
+    }
+
+    private val states = mutableMapOf<Int, State>()
 
     var boarded = 0
         private set
-
     var exited = 0
         private set
-
     var frontBoarded = 0
         private set
     var rearBoarded = 0
@@ -23,90 +61,97 @@ class PassengerCounter {
         private set
 
     val inside: Int
-        get() = boarded - exited
+        get() = (boarded - exited).coerceAtLeast(0)
 
-    // Two lines with a gap between them. A track only counts as boarding
-    // once it has been seen OUTSIDE (<= LINE_OUTER) at some point and is
-    // later seen INSIDE (>= LINE_INNER), however many frames that takes -
-    // and vice versa for exiting. A person standing/seated in the gap
-    // won't flip-flop the count.
-    private val LINE_OUTER = 0.45f
-    private val LINE_INNER = 0.65f
+    private fun position(track: CentroidTracker.Track): Float {
+        val raw = if (TRAVEL_ALONG_Y) track.cy else track.cx
+        return if (OUTSIDE_IS_LOW) raw else 1f - raw
+    }
 
-    private enum class Zone { OUTSIDE, DEAD, INSIDE }
+    private fun countBoard(door: String, why: String, id: Int) {
+        Log.d("COUNT", "BOARD ($why) id=$id")
+        boarded++
+        if (door == "FRONT") frontBoarded++ else rearBoarded++
+    }
 
-    // Persists each track's last known zone across frames. This is the
-    // key fix: the previous version only compared this frame's cy against
-    // last frame's cy directly, which required a person to cross the
-    // entire OUTER->INNER gap in a single frame update to be counted -
-    // something normal, gradual walking motion essentially never does.
-    // Tracking zone state instead means "was outside at some point, is
-    // now inside" is caught correctly regardless of how many frames the
-    // crossing took.
-    private val lastZone = mutableMapOf<Int, Zone>()
-
-    private fun zoneOf(cy: Float): Zone = when {
-        cy <= LINE_OUTER -> Zone.OUTSIDE
-        cy >= LINE_INNER -> Zone.INSIDE
-        else -> Zone.DEAD
+    private fun countExit(door: String, why: String, id: Int) {
+        Log.d("COUNT", "EXIT ($why) id=$id")
+        exited++
+        if (door == "FRONT") frontExited++ else rearExited++
     }
 
     fun update(tracks: List<CentroidTracker.Track>, door: String) {
         for (track in tracks) {
+            val st = states.getOrPut(track.id) { State() }
+            val confirmed = track.confirmedFrames >= CentroidTracker.CONFIRM_FRAMES
 
-            // Require a few consecutive matched frames before trusting this
-            // track at all - filters single-frame noise (hands, misfires).
-            if (track.confirmedFrames < CentroidTracker.CONFIRM_FRAMES) continue
-
-            val currentZone = zoneOf(track.cy)
-
-            // A track first seen already inside the cabin is very likely a
-            // re-acquired existing passenger (lost briefly to occlusion,
-            // given a new id), not someone freshly boarding. Seed its zone
-            // without triggering a transition, and mark it already-counted
-            // so it isn't double counted later.
-            if (track.justCreated) {
-                lastZone[track.id] = currentZone
-                if (currentZone == Zone.INSIDE) {
-                    countedBoarded.add(track.id)
+            // ---------- track currently NOT matched this frame ----------
+            if (track.missed > 0) {
+                if (track.missed >= LOST_FRAMES && st.centerReached && confirmed) {
+                    val outsideSeen = st.lo <= LINE - ORIGIN_MARGIN
+                    val insideSeen = st.hi >= LINE + ORIGIN_MARGIN
+                    if (outsideSeen && !insideSeen) {
+                        countBoard(door, "lost at door", track.id)
+                    } else if (insideSeen && !outsideSeen) {
+                        countExit(door, "lost at door", track.id)
+                    }
+                    // Origin is unknown after a loss; start fresh.
+                    st.lo = 1e9f
+                    st.hi = -1e9f
+                    st.centerReached = false
                 }
                 continue
             }
 
-            val previousZone = lastZone[track.id] ?: currentZone
-
-            Log.d("TRACK", "ID=${track.id} zone=$previousZone->$currentZone cy=${track.cy}")
-
-            if (previousZone == Zone.OUTSIDE && currentZone == Zone.INSIDE) {
-                Log.d("TRACK", "BOARDING ID=${track.id}")
-                if (!countedBoarded.contains(track.id)) {
-                    countedBoarded.add(track.id)
-                    boarded++
-                    if (door == "FRONT") frontBoarded++ else rearBoarded++
-                }
-            } else if (previousZone == Zone.INSIDE && currentZone == Zone.OUTSIDE) {
-                Log.d("TRACK", "EXITING ID=${track.id}")
-                if (!countedExited.contains(track.id)) {
-                    countedExited.add(track.id)
-                    exited++
-                    if (door == "FRONT") frontExited++ else rearExited++
-                }
+            // ---------- matched this frame ----------
+            val box = track.box
+            val giant = box != null && (box.w > GIANT_SIZE || box.h > GIANT_SIZE)
+            if (giant) {
+                // Person is right under the camera: centre is meaningless,
+                // but it does tell us they reached the door.
+                st.centerReached = true
+                Log.d("TRACK", "id=${track.id} GIANT box w=${"%.2f".format(box!!.w)} h=${"%.2f".format(box.h)}")
             }
 
-            lastZone[track.id] = currentZone
+            val p = position(track)
+            st.lo = min(st.lo, p)
+            st.hi = max(st.hi, p)
+            if (abs(p - LINE) <= CENTER_BAND || (st.lo < LINE && st.hi > LINE)) {
+                st.centerReached = true
+            }
+
+            Log.d(
+                "TRACK",
+                "id=${track.id} cx=${"%.2f".format(track.cx)} cy=${"%.2f".format(track.cy)} " +
+                        "p=${"%.2f".format(p)} lo=${"%.2f".format(st.lo)} hi=${"%.2f".format(st.hi)} " +
+                        "frames=${track.confirmedFrames}"
+            )
+
+            if (!confirmed) continue
+
+            val outsideSeen = st.lo <= LINE - ORIGIN_MARGIN
+            val insideSeen = st.hi >= LINE + ORIGIN_MARGIN
+
+            if (outsideSeen && p >= LINE + HYSTERESIS) {
+                countBoard(door, "crossed", track.id)
+                st.lo = p
+                st.hi = p
+                st.centerReached = false
+            } else if (insideSeen && p <= LINE - HYSTERESIS) {
+                countExit(door, "crossed", track.id)
+                st.lo = p
+                st.hi = p
+                st.centerReached = false
+            }
         }
 
-        // Drop zone memory for tracks that no longer exist (lost to
-        // CentroidTracker's MAX_MISSED pruning), so this map doesn't grow
-        // unbounded over a long session.
-        val currentIds = tracks.map { it.id }.toSet()
-        lastZone.keys.retainAll(currentIds)
+        // Forget state for tracks the tracker has already pruned.
+        val liveIds = tracks.map { it.id }.toSet()
+        states.keys.retainAll(liveIds)
     }
 
     fun reset() {
-        countedBoarded.clear()
-        countedExited.clear()
-        lastZone.clear()
+        states.clear()
         boarded = 0
         exited = 0
         frontBoarded = 0

@@ -2,19 +2,21 @@ package com.surendramaran.Jeepqs.detector
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import android.os.SystemClock
-import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
 import org.tensorflow.lite.support.common.FileUtil
-import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 
 class Detector(
     private val context: Context,
@@ -31,25 +33,40 @@ class Detector(
     private var numChannel = 0
     private var numElements = 0
 
-    // Region of Interest - only count inside jeepney doorway
-    private val ROI_MIN_X = 0.08f
-    private val ROI_MAX_X = 0.92f
-    private val ROI_MIN_Y = 0.12f
-    private val ROI_MAX_Y = 0.88f
+    // Index of the "person" class in the labels file (-1 if missing).
+    private var personIdx = -1
 
-    // True if the model's input tensor is NCHW (channels-first: [1,3,H,W]),
-    // false if NHWC (channels-last: [1,H,W,3]). Detected at load time from
-    // the actual model rather than assumed, since different export
-    // pipelines/versions can produce either layout - building the input
-    // buffer in the wrong one silently feeds the model scrambled pixel
-    // data with no error thrown.
+    // True if the model input is NCHW ([1,3,H,W]); false if NHWC ([1,H,W,3]).
     private var isNCHW = false
+
+    // ------------------------------------------------------------------
+    // Buffers allocated ONCE and reused every frame. The old code allocated
+    // ~10 MB of large objects per frame, which caused constant garbage
+    // collection and a very low frame rate (~2 fps).
+    // ------------------------------------------------------------------
+    private var scaledBitmap: Bitmap? = null
+    private var scaledCanvas: Canvas? = null
+    private val scalePaint = Paint()
+    private val srcRect = Rect()
+    private val dstRect = Rect()
+
+    private lateinit var pixels: IntArray
+    private lateinit var inputBuffer: ByteBuffer
+    private lateinit var inputFloats: FloatBuffer
+    private lateinit var outputBuffer: ByteBuffer
+    private lateinit var outputFloats: FloatBuffer
+
+    // Region of interest, kept wide so edge entries/exits are seen.
+    private val ROI_MIN_X = 0.00f
+    private val ROI_MAX_X = 1.00f
+    private val ROI_MIN_Y = 0.00f
+    private val ROI_MAX_Y = 1.00f
 
     init {
         val compatList = CompatibilityList()
 
-        val options = Interpreter.Options().apply{
-            if(compatList.isDelegateSupportedOnThisDevice){
+        val options = Interpreter.Options().apply {
+            if (compatList.isDelegateSupportedOnThisDevice) {
                 val delegateOptions = compatList.bestOptionsForThisDevice
                 this.addDelegate(GpuDelegate(delegateOptions))
             } else {
@@ -65,12 +82,10 @@ class Detector(
 
         if (inputShape != null) {
             if (inputShape[1] == 3) {
-                // NCHW: [1, 3, H, W]
                 isNCHW = true
                 tensorWidth = inputShape[2]
                 tensorHeight = inputShape[3]
             } else {
-                // NHWC: [1, H, W, 3]
                 isNCHW = false
                 tensorWidth = inputShape[1]
                 tensorHeight = inputShape[2]
@@ -97,6 +112,25 @@ class Detector(
         } catch (e: IOException) {
             e.printStackTrace()
         }
+
+        personIdx = labels.indexOf("person")
+
+        if (tensorWidth > 0 && tensorHeight > 0 && numChannel > 0 && numElements > 0) {
+            val bmp = Bitmap.createBitmap(tensorWidth, tensorHeight, Bitmap.Config.ARGB_8888)
+            scaledBitmap = bmp
+            scaledCanvas = Canvas(bmp)
+            dstRect.set(0, 0, tensorWidth, tensorHeight)
+
+            pixels = IntArray(tensorWidth * tensorHeight)
+
+            inputBuffer = ByteBuffer.allocateDirect(3 * tensorWidth * tensorHeight * 4)
+            inputBuffer.order(ByteOrder.nativeOrder())
+            inputFloats = inputBuffer.asFloatBuffer()
+
+            outputBuffer = ByteBuffer.allocateDirect(numChannel * numElements * 4)
+            outputBuffer.order(ByteOrder.nativeOrder())
+            outputFloats = outputBuffer.asFloatBuffer()
+        }
     }
 
     fun restart(isGpu: Boolean) {
@@ -104,8 +138,8 @@ class Detector(
 
         val options = if (isGpu) {
             val compatList = CompatibilityList()
-            Interpreter.Options().apply{
-                if(compatList.isDelegateSupportedOnThisDevice){
+            Interpreter.Options().apply {
+                if (compatList.isDelegateSupportedOnThisDevice) {
                     val delegateOptions = compatList.bestOptionsForThisDevice
                     this.addDelegate(GpuDelegate(delegateOptions))
                 } else {
@@ -113,7 +147,7 @@ class Detector(
                 }
             }
         } else {
-            Interpreter.Options().apply{
+            Interpreter.Options().apply {
                 this.setNumThreads(4)
             }
         }
@@ -131,19 +165,27 @@ class Detector(
         if (tensorHeight == 0) return
         if (numChannel == 0) return
         if (numElements == 0) return
+        if (personIdx < 0 || 4 + personIdx >= numChannel) return
+
+        val bmp = scaledBitmap ?: return
+        val canvas = scaledCanvas ?: return
 
         var inferenceTime = SystemClock.uptimeMillis()
 
-        val resizedBitmap = Bitmap.createScaledBitmap(frame, tensorWidth, tensorHeight, false)
-        val imageBuffer = bitmapToInputBuffer(resizedBitmap)
+        // Scale the camera frame into the reusable model-sized bitmap.
+        srcRect.set(0, 0, frame.width, frame.height)
+        canvas.drawBitmap(frame, srcRect, dstRect, scalePaint)
 
-        val output = TensorBuffer.createFixedSize(intArrayOf(1, numChannel, numElements), OUTPUT_IMAGE_TYPE)
-        interpreter.run(imageBuffer, output.buffer)
+        fillInputBuffer(bmp)
 
-        val bestBoxes = bestBox(output.floatArray)
+        outputBuffer.rewind()
+        interpreter.run(inputBuffer, outputBuffer)
+
+        val bestBoxes = bestBox()
         inferenceTime = SystemClock.uptimeMillis() - inferenceTime
 
         if (bestBoxes == null || bestBoxes.isEmpty()) {
+            // MainActivity.onEmptyDetect() forwards this to the tracker.
             detectorListener.onEmptyDetect()
             return
         }
@@ -151,110 +193,80 @@ class Detector(
         detectorListener.onDetect(bestBoxes, inferenceTime)
     }
 
-    // Builds the model's input buffer directly from pixel data, in
-    // whichever layout (NCHW or NHWC) the model actually declares -
-    // rather than relying on a support-library helper that only ever
-    // produces one fixed layout (NHWC) regardless of what the model wants.
-    private fun bitmapToInputBuffer(bitmap: Bitmap): ByteBuffer {
-        val buffer = ByteBuffer.allocateDirect(1 * 3 * tensorWidth * tensorHeight * 4)
-        buffer.order(ByteOrder.nativeOrder())
-
-        val pixels = IntArray(tensorWidth * tensorHeight)
+    // Fills the reusable input buffer in the model's layout (NCHW or NHWC).
+    private fun fillInputBuffer(bitmap: Bitmap) {
         bitmap.getPixels(pixels, 0, tensorWidth, 0, 0, tensorWidth, tensorHeight)
 
+        val plane = tensorWidth * tensorHeight
+
         if (isNCHW) {
-            // Channel-major: every R value, then every G value, then every B value
-            for (channel in 0 until 3) {
-                for (pixel in pixels) {
-                    val value = when (channel) {
-                        0 -> (pixel shr 16) and 0xFF
-                        1 -> (pixel shr 8) and 0xFF
-                        else -> pixel and 0xFF
-                    }
-                    buffer.putFloat(value / INPUT_STANDARD_DEVIATION)
-                }
+            for (i in 0 until plane) {
+                val px = pixels[i]
+                inputFloats.put(i, ((px shr 16) and 0xFF) / INPUT_STANDARD_DEVIATION)
+                inputFloats.put(plane + i, ((px shr 8) and 0xFF) / INPUT_STANDARD_DEVIATION)
+                inputFloats.put(2 * plane + i, (px and 0xFF) / INPUT_STANDARD_DEVIATION)
             }
         } else {
-            // Pixel-major (NHWC): R,G,B together for each pixel, in row-major order
-            for (pixel in pixels) {
-                buffer.putFloat(((pixel shr 16) and 0xFF) / INPUT_STANDARD_DEVIATION)
-                buffer.putFloat(((pixel shr 8) and 0xFF) / INPUT_STANDARD_DEVIATION)
-                buffer.putFloat((pixel and 0xFF) / INPUT_STANDARD_DEVIATION)
+            for (i in 0 until plane) {
+                val px = pixels[i]
+                val base = 3 * i
+                inputFloats.put(base, ((px shr 16) and 0xFF) / INPUT_STANDARD_DEVIATION)
+                inputFloats.put(base + 1, ((px shr 8) and 0xFF) / INPUT_STANDARD_DEVIATION)
+                inputFloats.put(base + 2, (px and 0xFF) / INPUT_STANDARD_DEVIATION)
             }
         }
 
-        buffer.rewind()
-        return buffer
+        inputBuffer.rewind()
     }
 
-    private fun bestBox(array: FloatArray) : List<BoundingBox>? {
+    // Only the "person" channel is read (the old code scanned all classes for
+    // every candidate, which was slow and unnecessary).
+    private fun bestBox(): List<BoundingBox>? {
 
         val boundingBoxes = mutableListOf<BoundingBox>()
+        val personBase = numElements * (4 + personIdx)
 
         for (c in 0 until numElements) {
-            var maxConf = CONFIDENCE_THRESHOLD
-            var maxIdx = -1
-            var j = 4
-            var arrayIdx = c + numElements * j
-            while (j < numChannel){
-                if (array[arrayIdx] > maxConf) {
-                    maxConf = array[arrayIdx]
-                    maxIdx = j - 4
-                }
-                j++
-                arrayIdx += numElements
-            }
+            val conf = outputFloats.get(personBase + c)
+            if (conf <= CONFIDENCE_THRESHOLD) continue
 
-            if (maxConf > CONFIDENCE_THRESHOLD && maxIdx >= 0 && maxIdx < labels.size) {
-                val clsName = labels[maxIdx]
+            // RAW (unclipped) centre and size. Used for TRACKING so a large
+            // box that spills past the frame keeps a meaningful centre.
+            val rawCx = outputFloats.get(c)
+            val rawCy = outputFloats.get(c + numElements)
+            val rawW = outputFloats.get(c + numElements * 2)
+            val rawH = outputFloats.get(c + numElements * 3)
 
-                // Only count "person" class
-                if (clsName != "person") continue
+            // CLIPPED corners, used for drawing, size filters and NMS.
+            val x1 = (rawCx - rawW / 2F).coerceIn(0F, 1F)
+            val y1 = (rawCy - rawH / 2F).coerceIn(0F, 1F)
+            val x2 = (rawCx + rawW / 2F).coerceIn(0F, 1F)
+            val y2 = (rawCy + rawH / 2F).coerceIn(0F, 1F)
 
-                val cx = array[c]
-                val cy = array[c + numElements]
-                val w = array[c + numElements * 2]
-                val h = array[c + numElements * 3]
-                val x1 = cx - (w/2F)
-                val y1 = cy - (h/2F)
-                val x2 = cx + (w/2F)
-                val y2 = cy + (h/2F)
+            val boxW = x2 - x1
+            val boxH = y2 - y1
+            if (boxW <= 0F || boxH <= 0F) continue
 
-                // Bounds check
-                if (x1 < 0F || x1 > 1F) continue
-                if (y1 < 0F || y1 > 1F) continue
-                if (x2 < 0F || x2 > 1F) continue
-                if (y2 < 0F || y2 > 1F) continue
+            if (rawCx < ROI_MIN_X || rawCx > ROI_MAX_X) continue
+            if (rawCy < ROI_MIN_Y || rawCy > ROI_MAX_Y) continue
 
-                // Only count if inside ROI (jeepney doorway area)
-                if (cx < ROI_MIN_X || cx > ROI_MAX_X) continue
-                if (cy < ROI_MIN_Y || cy > ROI_MAX_Y) continue
+            if (boxW < MIN_BOX_WIDTH || boxH < MIN_BOX_HEIGHT) continue
 
-                // Reject boxes too small to plausibly be a passenger's
-                // head/shoulders from this overhead mount - tune against
-                // your actual footage.
-                val boxW = x2 - x1
-                val boxH = y2 - y1
-                if (boxW < MIN_BOX_WIDTH || boxH < MIN_BOX_HEIGHT) continue
-
-                // Wide-tolerance aspect ratio guard. From directly above, a
-                // head+shoulders blob is roughly square, but this only
-                // rejects extreme slivers (very thin/wide shapes a real
-                // person's box would never produce) - a hand, an edge of
-                // railing, a shadow strip - without over-constraining the
-                // legitimate square-ish range like the old strict "must be
-                // taller than wide" filter did.
+            // Aspect guard skipped for boxes touching the frame edge, since
+            // clipping distorts their shape.
+            val touchesEdge = x1 <= 0F || y1 <= 0F || x2 >= 1F || y2 >= 1F
+            if (!touchesEdge) {
                 val aspectRatio = boxW / boxH
                 if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue
-
-                boundingBoxes.add(
-                    BoundingBox(
-                        x1 = x1, y1 = y1, x2 = x2, y2 = y2,
-                        cx = cx, cy = cy, w = w, h = h,
-                        cnf = maxConf, cls = maxIdx, clsName = clsName
-                    )
-                )
             }
+
+            boundingBoxes.add(
+                BoundingBox(
+                    x1 = x1, y1 = y1, x2 = x2, y2 = y2,
+                    cx = rawCx, cy = rawCy, w = rawW, h = rawH,
+                    cnf = conf, cls = personIdx, clsName = "person"
+                )
+            )
         }
 
         if (boundingBoxes.isEmpty()) return null
@@ -262,11 +274,11 @@ class Detector(
         return applyNMS(boundingBoxes)
     }
 
-    private fun applyNMS(boxes: List<BoundingBox>) : MutableList<BoundingBox> {
+    private fun applyNMS(boxes: List<BoundingBox>): MutableList<BoundingBox> {
         val sortedBoxes = boxes.sortedByDescending { it.cnf }.toMutableList()
         val selectedBoxes = mutableListOf<BoundingBox>()
 
-        while(sortedBoxes.isNotEmpty()) {
+        while (sortedBoxes.isNotEmpty()) {
             val first = sortedBoxes.first()
             selectedBoxes.add(first)
             sortedBoxes.remove(first)
@@ -284,15 +296,17 @@ class Detector(
         return selectedBoxes
     }
 
+    // IoU from the clipped corners (raw w/h can exceed the frame).
     private fun calculateIoU(box1: BoundingBox, box2: BoundingBox): Float {
         val x1 = maxOf(box1.x1, box2.x1)
         val y1 = maxOf(box1.y1, box2.y1)
         val x2 = minOf(box1.x2, box2.x2)
         val y2 = minOf(box1.y2, box2.y2)
         val intersectionArea = maxOf(0F, x2 - x1) * maxOf(0F, y2 - y1)
-        val box1Area = box1.w * box1.h
-        val box2Area = box2.w * box2.h
-        return intersectionArea / (box1Area + box2Area - intersectionArea)
+        val box1Area = (box1.x2 - box1.x1) * (box1.y2 - box1.y1)
+        val box2Area = (box2.x2 - box2.x1) * (box2.y2 - box2.y1)
+        val union = box1Area + box2Area - intersectionArea
+        return if (union > 0F) intersectionArea / union else 0F
     }
 
     interface DetectorListener {
@@ -302,27 +316,13 @@ class Detector(
 
     companion object {
         private const val INPUT_STANDARD_DEVIATION = 255f
-        private val OUTPUT_IMAGE_TYPE = DataType.FLOAT32
 
-        // Confidence threshold. Verified against real photos: this model
-        // gives sharp, confident detections (0.87-0.90) on actual people,
-        // not borderline scores - so raised significantly from the earlier
-        // untested guess of 0.4F to cut out noise. If real passengers start
-        // getting missed, lower this gradually (e.g. 0.6) rather than
-        // jumping back to 0.4.
-        private const val CONFIDENCE_THRESHOLD = 0.7F
-        private const val IOU_THRESHOLD = 0.45F
+        private const val CONFIDENCE_THRESHOLD = 0.40F
+        private const val IOU_THRESHOLD = 0.55F
 
-        // Minimum plausible size for a head+shoulders blob seen from
-        // directly overhead, in normalized [0,1] coordinates. This depends
-        // heavily on your actual mount height and camera FOV - measure
-        // against real footage rather than trusting these defaults.
-        private const val MIN_BOX_WIDTH = 0.06f
-        private const val MIN_BOX_HEIGHT = 0.06f
+        private const val MIN_BOX_WIDTH = 0.04f
+        private const val MIN_BOX_HEIGHT = 0.04f
 
-        // Wide tolerance around square (1.0) - rejects only extreme
-        // slivers, not the natural square-ish variation of a real
-        // head+shoulders blob seen from overhead.
         private const val MIN_ASPECT_RATIO = 0.35f
         private const val MAX_ASPECT_RATIO = 2.8f
     }

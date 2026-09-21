@@ -2,9 +2,6 @@
 
 <resources>
 
-    <!-- ========================================================= -->
-    <!-- JEEPQTRACK OCEAN PALETTE                                  -->
-    <!-- ========================================================= -->
 
     <color name="clay_background">#DDF4FC</color>
     <color name="clay_surface">#EAF9FE</color>
@@ -53,6 +50,7 @@
     <color name="secondary_role_bg">#FFE1BD</color>
     <color name="camera_placeholder">#D9F3FF</color>
     <!-- Detection -->
+
 
     <color name="bounding_box_color">#167BAA</color>
 

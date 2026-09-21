@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
+import com.surendramaran.Jeepqs.BuildConfig
 import com.surendramaran.Jeepqs.settings.DeviceConfig
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -26,7 +27,10 @@ class SupabaseService(
 
         private const val SUPABASE_KEY = "sb_publishable_goOnWdfw3tacBtKYBE7ZFA_JLhgM9vb"
 
-        private val SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1menRlbmpyd3RmanNnZWJtdmRhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjcxOTgxMSwiZXhwIjoyMDk4Mjk1ODExfQ.Xs96smUK9DGSzDBrsehHaJKnYaSrDROJWMRnXVUM3jE"
+        // ⚠️ Pulled from BuildConfig (populated from local.properties) —
+        // never hardcode this. See build.gradle.kts buildConfigField and
+        // local.properties SUPABASE_SERVICE_ROLE_KEY entry.
+        private val SERVICE_ROLE_KEY: String = BuildConfig.SUPABASE_SERVICE_ROLE_KEY
 
         private const val CONNECTION_TIMEOUT = 30L
         private const val WRITE_TIMEOUT = 30L
@@ -597,6 +601,126 @@ class SupabaseService(
     }
     fun getAdmins(callback: (JSONArray?) -> Unit) {
         getUsers(role = "admin", callback = callback)
+    }
+    fun getAllStaff(callback: (JSONArray?) -> Unit) {
+        var url =
+            "$SUPABASE_URL/rest/v1/users" +
+                    "?select=id,phone_number,display_name,role,expo_push_token" +
+                    "&is_active=eq.true" +
+                    "&role=in.(driver,dispatcher,admin)"
+
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        executeRequestWithBody(request) { body ->
+            try {
+                if (!body.isNullOrEmpty()) {
+                    callback(JSONArray(body))
+                } else {
+                    callback(null)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "getAllStaff parse failed: ${e.message}", e)
+                callback(null)
+            }
+        }
+    }
+    fun getActiveStaff(callback: (JSONArray?) -> Unit) {
+
+        val url =
+            "$SUPABASE_URL/rest/v1/users" +
+                    "?select=id,display_name,phone_number,role,is_active," +
+                    "expo_push_token,fcm_token,jeepney_id,preferred_terminal,preferred_bracket" +
+                    "&role=in.(driver,dispatcher,admin)" +
+                    "&is_active=eq.true"
+
+        Log.d(TAG, "getActiveStaff: requesting active staff")
+        Log.d(TAG, "getActiveStaff URL: $url")
+
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .addHeader("Accept", "application/json")
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e(
+                    TAG,
+                    "getActiveStaff: network failure: ${e.message}",
+                    e
+                )
+                callback(null)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+
+                    val body = response.body?.string()
+
+                    Log.d(
+                        TAG,
+                        "getActiveStaff: HTTP ${response.code}"
+                    )
+
+                    if (!response.isSuccessful) {
+                        Log.e(
+                            TAG,
+                            "getActiveStaff: HTTP ${response.code}: $body"
+                        )
+                        callback(null)
+                        return
+                    }
+
+                    if (body.isNullOrBlank()) {
+                        Log.w(
+                            TAG,
+                            "getActiveStaff: empty response"
+                        )
+                        callback(null)
+                        return
+                    }
+
+                    try {
+                        val staff = JSONArray(body)
+
+                        Log.d(
+                            TAG,
+                            "getActiveStaff: ${staff.length()} active staff found"
+                        )
+
+                        for (i in 0 until staff.length()) {
+                            val user = staff.getJSONObject(i)
+
+                            Log.d(
+                                TAG,
+                                "staff[$i]: " +
+                                        "${user.optString("display_name")} | " +
+                                        "${user.optString("role")} | " +
+                                        "${user.optString("phone_number")}"
+                            )
+                        }
+
+                        callback(staff)
+
+                    } catch (e: Exception) {
+                        Log.e(
+                            TAG,
+                            "getActiveStaff: JSON parse failed: $body",
+                            e
+                        )
+                        callback(null)
+                    }
+                }
+            }
+        })
     }
     fun getUserById(userId: String, callback: (JSONObject?) -> Unit) {
         val request = Request.Builder()
