@@ -17,11 +17,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
     private val bounds = Rect()
 
-    // These must stay in sync with PassengerCounter.LINE_OUTER / LINE_INNER.
-    // Drawn here purely for visual/debug purposes - the actual counting
-    // math lives in PassengerCounter and does not read these.
-    private val LINE_OUTER = 0.45f
-    private val LINE_INNER = 0.65f
+    private val LINE_OUTER = 1f - (0.50f - 0.10f)
+    private val LINE_INNER = 1f - (0.50f + 0.10f)
 
     private val boxPaint = Paint().apply {
         color = ContextCompat.getColor(context!!, R.color.bounding_box_color)
@@ -84,8 +81,6 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val width = width.toFloat()
         val height = height.toFloat()
 
-        // Draw ROI (jeepney doorway area) - must stay in sync with
-        // Detector.ROI_MIN_X/MAX_X/MIN_Y/MAX_Y
         canvas.drawRect(
             width * 0.08f,
             height * 0.12f,
@@ -94,11 +89,6 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             roiPaint
         )
 
-        // Draw the two hysteresis lines that PassengerCounter actually uses.
-        // A track only counts as boarding once it moves from above the
-        // outer (yellow) line to below the inner (cyan) line, and vice
-        // versa for exiting - the gap between them is a "dead zone" where
-        // someone can stand/sit without triggering repeated counts.
         val outerY = height * LINE_OUTER
         val innerY = height * LINE_INNER
 
@@ -115,7 +105,6 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
         textPaint.color = Color.WHITE
 
-        // Draw all detections
         results.forEach { box ->
             val left = box.x1 * width
             val top = box.y1 * height
@@ -145,10 +134,6 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             )
         }
 
-        // This device only ever watches one door (fixed per-device via
-        // DeviceConfig), so there is no meaningful front/rear split to
-        // compute from a single camera's detections - just show the raw
-        // count of people currently detected in this frame.
         countPaint.color = Color.WHITE
         countPaint.textSize = 32f
         canvas.drawText(

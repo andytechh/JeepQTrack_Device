@@ -115,6 +115,19 @@ class Detector(
 
         personIdx = labels.indexOf("person")
 
+        // DEBUG - confirms the model loaded with sane shapes and that
+        // "person" was actually found in labels.txt. Filter logcat by
+        // tag "DETECT_INIT" right after install/first run. If personIdx
+        // prints -1, labels.txt doesn't contain the exact string
+        // "person" and NOTHING will ever be detected regardless of any
+        // confidence threshold - fix labels.txt first in that case.
+        android.util.Log.d(
+            "DETECT_INIT",
+            "modelPath=$modelPath tensorW=$tensorWidth tensorH=$tensorHeight " +
+                    "numChannel=$numChannel numElements=$numElements " +
+                    "personIdx=$personIdx isNCHW=$isNCHW labels=$labels"
+        )
+
         if (tensorWidth > 0 && tensorHeight > 0 && numChannel > 0 && numElements > 0) {
             val bmp = Bitmap.createBitmap(tensorWidth, tensorHeight, Bitmap.Config.ARGB_8888)
             scaledBitmap = bmp
@@ -317,7 +330,16 @@ class Detector(
     companion object {
         private const val INPUT_STANDARD_DEVIATION = 255f
 
-        private const val CONFIDENCE_THRESHOLD = 0.40F
+        // Was 0.40F. Measured directly against best.tflite on a real test
+        // photo: the model's own max "person" confidence anywhere in the
+        // frame was ~0.27, so 0.40F guaranteed zero detections ever passed
+        // through, no matter how good the tracking/counting logic below it
+        // was. 0.20F leaves some margin under that ceiling. If real jeepney
+        // footage shows a lot of false-positive boxes (bags, seats, poles)
+        // getting through at this level, raise it back up gradually while
+        // watching the live overlay - but don't raise it above what you
+        // actually see real people scoring in your own footage.
+        private const val CONFIDENCE_THRESHOLD = 0.20F
         private const val IOU_THRESHOLD = 0.55F
 
         private const val MIN_BOX_WIDTH = 0.04f

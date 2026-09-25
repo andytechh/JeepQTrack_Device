@@ -4,7 +4,9 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -75,6 +77,17 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
     // Rear camera is the default.
     private var cameraFacing = CameraSelector.LENS_FACING_BACK
+
+    // ------------------------------------------------------------------
+    // Reused every frame instead of allocating two new full-resolution
+    // Bitmaps per frame (was real GC pressure on top of inference time -
+    // only reallocated if the camera's actual output size changes, e.g.
+    // after rotating the camera).
+    // ------------------------------------------------------------------
+    private var frameBitmap: Bitmap? = null
+    private var rotatedBitmap: Bitmap? = null
+    private var rotatedCanvas: Canvas? = null
+    private val rotationPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     // ============================================================
     // DEVICE
@@ -728,6 +741,10 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
             imageAnalyzer = null
             camera = null
 
+            frameBitmap = null
+            rotatedBitmap = null
+            rotatedCanvas = null
+
             isCameraStarted = false
             isCameraStarting = false
 
@@ -879,8 +896,22 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                     "Camera not initialized"
                 )
 
+        // NOTE: NOT binding.viewFinder.display.rotation. The UI is locked
+        // to portrait (see AndroidManifest.xml), so display.rotation
+        // always reports that fixed orientation regardless of how the
+        // phone is physically mounted.
+        //
+        // The camera is now mounted top-down (flat), not sideways, so
+        // there is no fixed mount correction to layer on top of what
+        // CameraX already computes from the sensor - we tell it the
+        // target surface is natural/portrait orientation directly.
+        //
+        // If the phone is ever remounted sideways again: watch the live
+        // preview in binding.viewFinder while trying ROTATION_90 / 180 /
+        // 270 here until a person walking through the door appears
+        // upright and moves the expected direction on screen.
         val rotation =
-            binding.viewFinder.display.rotation
+            android.view.Surface.ROTATION_0
 
         val cameraSelector =
             CameraSelector.Builder()
@@ -941,59 +972,63 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
         try {
 
-            val bitmapBuffer =
-                Bitmap.createBitmap(
-                    imageProxy.width,
-                    imageProxy.height,
-                    Bitmap.Config.ARGB_8888
-                )
+            val srcW = imageProxy.width
+            val srcH = imageProxy.height
+            val rotationDeg = imageProxy.imageInfo.rotationDegrees
+            val mirror = cameraFacing == CameraSelector.LENS_FACING_FRONT
 
-            imageProxy.use {
+            // Rotating 90/180... degrees swaps which dimension is width
+            // vs height in the final upright image.
+            val swapDims = rotationDeg == 90 || rotationDeg == 270
+            val dstW = if (swapDims) srcH else srcW
+            val dstH = if (swapDims) srcW else srcH
 
-                bitmapBuffer.copyPixelsFromBuffer(
-                    imageProxy.planes[0].buffer
-                )
+            if (frameBitmap == null ||
+                frameBitmap!!.width != srcW ||
+                frameBitmap!!.height != srcH
+            ) {
+                frameBitmap = Bitmap.createBitmap(srcW, srcH, Bitmap.Config.ARGB_8888)
+            }
+            val bitmapBuffer = frameBitmap!!
+
+            // NOTE: do NOT wrap this in imageProxy.use{} - that closes
+            // imageProxy immediately, but imageInfo.rotationDegrees and
+            // width are still read below. Closing early made every frame
+            // throw on that later access, silently swallowed by the
+            // catch below, so detector.detect() was never reached and
+            // the UI never updated. The finally block already closes
+            // imageProxy exactly once, after everything here is done.
+            bitmapBuffer.copyPixelsFromBuffer(
+                imageProxy.planes[0].buffer
+            )
+
+            if (rotatedBitmap == null ||
+                rotatedBitmap!!.width != dstW ||
+                rotatedBitmap!!.height != dstH
+            ) {
+                rotatedBitmap = Bitmap.createBitmap(dstW, dstH, Bitmap.Config.ARGB_8888)
+                rotatedCanvas = Canvas(rotatedBitmap!!)
+            }
+            val canvas = rotatedCanvas!!
+            val outBitmap = rotatedBitmap!!
+
+            // Rotate (and mirror, front camera only) about the source
+            // centre, then move the result to the destination centre -
+            // same transform as before, just drawn into a reused Bitmap
+            // instead of allocating a new one every frame.
+            val matrix = Matrix().apply {
+                postTranslate(-srcW / 2f, -srcH / 2f)
+                if (mirror) {
+                    postScale(-1f, 1f)
+                }
+                postRotate(rotationDeg.toFloat())
+                postTranslate(dstW / 2f, dstH / 2f)
             }
 
-            val matrix =
-                Matrix().apply {
-
-                    postRotate(
-                        imageProxy.imageInfo.rotationDegrees.toFloat()
-                    )
-
-                    /*
-                     * Only mirror the front camera.
-                     * Rear camera remains unmirrored.
-                     */
-
-                    if (
-                        cameraFacing ==
-                        CameraSelector.LENS_FACING_FRONT
-                    ) {
-
-                        postScale(
-                            -1f,
-                            1f,
-                            imageProxy.width.toFloat(),
-                            imageProxy.height.toFloat()
-                        )
-                    }
-                }
-
-            val rotatedBitmap =
-                Bitmap.createBitmap(
-                    bitmapBuffer,
-                    0,
-                    0,
-                    bitmapBuffer.width,
-                    bitmapBuffer.height,
-                    matrix,
-                    true
-                )
+            canvas.drawBitmap(bitmapBuffer, matrix, rotationPaint)
 
             detector?.detect(
-                rotatedBitmap
+                outBitmap
             )
 
         } catch (_: Exception) {
