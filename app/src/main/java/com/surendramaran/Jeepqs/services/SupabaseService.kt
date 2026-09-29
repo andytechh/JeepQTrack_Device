@@ -219,6 +219,17 @@ class SupabaseService(
         }
         patchJeepneys(json, callback)
     }
+
+    // Replaces the plain updateStatus("arrived") call — stamps arrived_at fresh every time.
+    fun setArrived(callback: (Boolean) -> Unit) {
+        val json = JsonObject().apply {
+            addProperty("status", "arrived")
+            addProperty("arrived_at", timestamp())
+            addProperty("updated_at", timestamp())
+        }
+        patchJeepneys(json, callback)
+    }
+
     fun updateGps(latitude: Double, longitude: Double, callback: (Boolean) -> Unit) {
         val json = JsonObject().apply {
             addProperty("latitude", latitude)
@@ -629,6 +640,78 @@ class SupabaseService(
             }
         }
     }
+
+    /**
+     * Non-blocking fetch of status + arrived_at for a specific jeepney.
+     * Mirrors getLoadingStartedAt()'s shape/parsing exactly — arrived_at is
+     * parsed with the same utcDateFormat() used for loading_started_at.
+     *
+     * Requires the jeepneys table to have an `arrived_at timestamptz` column
+     * (see: alter table jeepneys add column if not exists arrived_at timestamptz;)
+     * and setArrived() above to be the one writing status="arrived", since
+     * updateStatus("arrived") does NOT touch arrived_at.
+     */
+    fun getStatusAndArrivedAt(jeepneyId: String, callback: (Pair<String?, Long?>) -> Unit) {
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/jeepneys?select=status,arrived_at&id=eq.$jeepneyId")
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        executeRequestWithBody(request) { body ->
+            try {
+                if (!body.isNullOrEmpty()) {
+                    val array = JSONArray(body)
+                    if (array.length() > 0) {
+                        val obj = array.getJSONObject(0)
+                        val status = obj.optString("status").takeIf { it.isNotEmpty() }
+                        val arrivedAtStr = obj.optString("arrived_at")
+                        val arrivedAtMillis = if (arrivedAtStr.isNotEmpty() && arrivedAtStr != "null") {
+                            try {
+                                utcDateFormat().parse(arrivedAtStr)?.time
+                            } catch (_: Exception) {
+                                null
+                            }
+                        } else null
+                        callback(Pair(status, arrivedAtMillis))
+                        return@executeRequestWithBody
+                    }
+                }
+                callback(Pair(null, null))
+            } catch (e: Exception) {
+                Log.e(TAG, "getStatusAndArrivedAt parse failed, body=$body", e)
+                callback(Pair(null, null))
+            }
+        }
+    }
+
+    // Blocking read, same pattern as getLoadingStartedAtBlocking.
+    fun getStatusAndArrivedAtBlocking(jeepneyId: String): Pair<String?, Long?> {
+        var result: Pair<String?, Long?> = Pair(null, null)
+        val latch = CountDownLatch(1)
+        getStatusAndArrivedAt(jeepneyId) { pair ->
+            result = pair
+            latch.countDown()
+        }
+        latch.await(10, TimeUnit.SECONDS)
+        return result
+    }
+
+    // Blocking wrapper around the queue RPC, same shape as departJeepneyBlocking.
+    fun addToQueueWithBracketAndTerminalBlocking(
+        jeepneyId: String, bracket: Int, terminalId: Int
+    ): Pair<Int, String>? {
+        var result: Pair<Int, String>? = null
+        val latch = CountDownLatch(1)
+        addToQueueWithBracketAndTerminal(jeepneyId, bracket, terminalId) { pos, status ->
+            result = Pair(pos, status)
+            latch.countDown()
+        }
+        latch.await(10, TimeUnit.SECONDS)
+        return result
+    }
+
     fun getActiveStaff(callback: (JSONArray?) -> Unit) {
 
         val url =

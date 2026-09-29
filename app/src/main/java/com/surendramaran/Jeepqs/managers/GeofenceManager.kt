@@ -10,6 +10,7 @@ import androidx.core.app.ActivityCompat
 import com.google.android.gms.location.*
 import com.surendramaran.Jeepqs.services.SMSService
 import com.surendramaran.Jeepqs.services.SupabaseService
+import com.surendramaran.Jeepqs.workers.ArrivalCheckWorker
 import com.surendramaran.Jeepqs.workers.LoadingCheckWorker
 
 /**
@@ -69,7 +70,7 @@ class GeofenceManager(
             if (DEBUG_TESTING_MODE) 1L else 1L
 
         val CHECK_INTERVAL: Long =
-            if (DEBUG_TESTING_MODE) 15L else 15L
+            if (DEBUG_TESTING_MODE) 1L else 1L
 
         init {
             if (DEBUG_TESTING_MODE) {
@@ -202,6 +203,15 @@ class GeofenceManager(
 
             "waiting" -> {
                 startWaitingTimer()
+            }
+
+            "arrived" -> {
+                // Process may have been restarted while this jeep was
+                // sitting in "arrived" — the in-memory arrivalRunnable
+                // from before is gone. Re-arm the durable watchdog so a
+                // stranded arrival still gets picked up even without a
+                // fresh geofence ENTER event.
+                ArrivalCheckWorker.schedule(context)
             }
         }
     }
@@ -467,7 +477,10 @@ class GeofenceManager(
 
         currentStatus = "arrived"
 
-        supabase.updateStatus("arrived") { }
+        // Stamps arrived_at fresh (not just status), so the durable
+        // ArrivalCheckWorker watchdog below has a real per-lap timestamp
+        // to check against — see SupabaseService.setArrived().
+        supabase.setArrived { }
 
         onStatusChanged("arrived")
 
@@ -510,6 +523,17 @@ class GeofenceManager(
             arrivalRunnable!!,
             ARRIVAL_GRACE_MINUTES * 60_000
         )
+
+        // Durable backup for the Handler timer above. If the app process
+        // dies or finalizeArrival() silently aborts (isInsideTerminal
+        // flipped false from GPS jitter, etc.), this worker re-derives
+        // state from Supabase and forces the queue join once the grace
+        // period has genuinely elapsed — mirroring LoadingCheckWorker's
+        // role as a backup for the "loading" phase's Handler timers.
+        ArrivalCheckWorker.schedule(
+            context,
+            initialDelaySeconds = ARRIVAL_GRACE_MINUTES * 60
+        )
     }
 
 
@@ -542,6 +566,11 @@ class GeofenceManager(
                         "jeep left terminal or status changed"
             )
 
+            // Deliberately NOT cancelling ArrivalCheckWorker here — if this
+            // abort was caused by a spurious GPS blip while the jeep is
+            // genuinely still at the terminal in Supabase's eyes, the
+            // worker is the safety net that will still pick it back up.
+
             return
         }
 
@@ -550,6 +579,11 @@ class GeofenceManager(
             bracket = bracket,
             terminalId = terminalId
         ) { position, status ->
+
+            // The queue join succeeded via the in-memory path — the
+            // durable watchdog scheduled in onEnterTerminal() is no
+            // longer needed for this arrival.
+            ArrivalCheckWorker.cancel(context)
 
             Log.d(
                 TAG,
@@ -715,6 +749,11 @@ class GeofenceManager(
                 arrivalRunnable?.let {
                     handler.removeCallbacks(it)
                 }
+
+                // The jeep genuinely left before ever joining the queue —
+                // the watchdog scheduled in onEnterTerminal() should not
+                // fire and try to queue it after the fact.
+                ArrivalCheckWorker.cancel(context)
 
                 currentStatus = "en_route"
 
@@ -983,6 +1022,8 @@ class GeofenceManager(
         stopLoadingCheck()
 
         LoadingCheckWorker.cancel(context)
+
+        ArrivalCheckWorker.cancel(context)
 
         arrivalRunnable?.let {
             handler.removeCallbacks(it)

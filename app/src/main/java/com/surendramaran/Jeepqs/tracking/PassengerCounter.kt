@@ -8,38 +8,48 @@ import kotlin.math.min
 class PassengerCounter {
 
     private val TRAVEL_ALONG_Y = true
+
+    // Flipped from false -> true: on this top-mounted camera, "outside"
+    // (the street/step) reads as the LOW end of the position value and
+    // "inside" (the vehicle interior) reads as the HIGH end. This was
+    // backwards before, which is why boarding was logging as exited.
     private val OUTSIDE_IS_LOW = true
 
     private val LINE = 0.50f
     private val HYSTERESIS = 0.08f
-    private val ORIGIN_MARGIN = 0.08f   // was 0.10 - less runway needed on each side of the line
+    private val ORIGIN_MARGIN = 0.07f
     private val CENTER_BAND = 0.10f
     private val GIANT_SIZE = 0.85f
     private val LOST_FRAMES = 8
-    private val MIN_TRAVEL = 0.12f      // was 0.15
-    private val CONFIRM_CROSS_FRAMES = 1
+    private val MIN_TRAVEL = 0.12f
+
+    // Was 1. A crossing now has to hold true for 2 consecutive frames
+    // before it's confirmed - cheap extra guard against a single jittery
+    // frame (a pose wobble, a brief false box) triggering a count.
+    private val CONFIRM_CROSS_FRAMES = 2
 
     // Reject tracks whose detections were weak on average - these are
     // the ones most likely to be a false positive (bag, pole, seat) rather
     // than a real passenger.
     //
-    // NOTE: this must stay BELOW Detector.CONFIDENCE_THRESHOLD (0.40F) or
-    // every single crossing gets silently dropped - a detection that was
-    // good enough to be drawn and tracked would never be good enough to be
-    // counted. Was 0.55f, which sat *above* the detector's own gate and
-    // created a dead zone (0.40-0.55) where boxes tracked fine but nothing
-    // ever counted. Re-tune this using the avgConf values in the "COUNT"
-    // logcat trace below once you've watched a few real crossings with the
-    // new model - set it a bit below the lowest avgConf a genuine person
-    // produces, not an arbitrary carryover number.
-    private val MIN_AVG_CONFIDENCE = 0.55f
+    // Must stay BELOW Detector.CONFIDENCE_THRESHOLD (0.20F) or every
+    // crossing gets silently dropped again. 0.35f leaves margin under
+    // that. Re-tune using real avgConf values from the "COUNT" logcat
+    // trace: set it a bit below what real people show, and above what
+    // hand/bag false positives show, once you have both from real footage.
+    private val MIN_AVG_CONFIDENCE = 0.35f
 
-    // Require the track's recent motion to actually point the way it
-    // claims to be crossing, not just "current position is past the line".
-    // A short position history smoothed into a trend rejects single-frame
-    // jitter/ID-swap jumps that the wider tracker gate now allows through.
+    // NEW - separate, stricter persistence requirement just for counting
+    // eligibility (tracking/drawing still only needs CentroidTracker's
+    // own CONFIRM_FRAMES). A hand or bag passing quickly through frame
+    // is much less likely to stay tracked this long than an actual
+    // person walking through the door. Tune up/down based on how many
+    // frames real crossings vs. false positives actually last in your
+    // logs.
+    private val MIN_CONFIRMED_FRAMES_FOR_COUNT = 5
+
     private val TREND_WINDOW = 5
-    private val MIN_TREND_SLOPE = 0.02f   // per-frame average movement needed, in the crossing direction
+    private val MIN_TREND_SLOPE = 0.02f
 
     private class State {
         var lo = 1e9f
@@ -75,8 +85,6 @@ class PassengerCounter {
         return if (OUTSIDE_IS_LOW) raw else 1f - raw
     }
 
-    // Average forward-direction movement per frame over the recent window.
-    // Positive = moving toward "inside" (p increasing), negative = toward "outside".
     private fun trendSlope(st: State): Float {
         if (st.recentP.size < 2) return 0f
         val first = st.recentP.first()
@@ -100,9 +108,10 @@ class PassengerCounter {
         for (track in tracks) {
             val st = states.getOrPut(track.id) { State() }
             val confirmed = track.confirmedFrames >= CentroidTracker.CONFIRM_FRAMES
+            val countEligible = track.confirmedFrames >= MIN_CONFIRMED_FRAMES_FOR_COUNT
 
             if (track.missed > 0) {
-                if (track.missed >= LOST_FRAMES && st.centerReached && confirmed
+                if (track.missed >= LOST_FRAMES && st.centerReached && countEligible
                     && (st.hi - st.lo) >= MIN_TRAVEL
                 ) {
                     val avgConf = if (st.confCount > 0) st.confSum / st.confCount else 0f
@@ -114,10 +123,6 @@ class PassengerCounter {
                         } else if (insideSeen && !outsideSeen) {
                             countExit(door, "lost at door", track.id, avgConf)
                         } else {
-                            // NEW - tells us exactly why a real crossing didn't
-                            // register: either it never reached far enough on
-                            // one side (calibration/FOV issue), or it reached
-                            // BOTH sides (ambiguous - direction logic issue).
                             Log.d(
                                 "COUNT",
                                 "UNRESOLVED id=${track.id} lo=${"%.2f".format(st.lo)} " +
@@ -166,17 +171,18 @@ class PassengerCounter {
             val traveled = (st.hi - st.lo) >= MIN_TRAVEL
             val slope = trendSlope(st)
 
-            // DEBUG TRACE - filter logcat by tag "COUNT" while a person
-            // walks through the door to see exactly which gate is failing
-            // per frame (confidence, travel distance, direction/slope).
-            // Safe to remove once counting is confirmed working reliably;
-            // cheap to leave in otherwise since it's a single log call.
+            // DEBUG TRACE - filter logcat by tag "COUNT". Now also shows
+            // countEligible so you can see whether a false positive (hand/
+            // bag) is being rejected by the frame-persistence gate before
+            // it ever reaches the direction/confidence checks.
             Log.d(
                 "COUNT",
                 "id=${track.id} p=${"%.2f".format(p)} lo=${"%.2f".format(st.lo)} " +
                         "hi=${"%.2f".format(st.hi)} avgConf=${"%.2f".format(avgConf)} " +
-                        "confOk=$confOk traveled=$traveled slope=${"%.2f".format(slope)}"
+                        "confOk=$confOk countEligible=$countEligible traveled=$traveled slope=${"%.2f".format(slope)}"
             )
+
+            if (!countEligible) continue
 
             val wantsBoard = confOk && outsideSeen && traveled &&
                     p >= LINE + HYSTERESIS && slope >= MIN_TREND_SLOPE
@@ -188,7 +194,15 @@ class PassengerCounter {
                 st.pendingStreak++
                 if (st.pendingStreak >= CONFIRM_CROSS_FRAMES) {
                     countBoard(door, "crossed", track.id, avgConf)
-                    st.lo = p; st.hi = p; st.centerReached = false
+                    // Reset to the CENTER LINE, not the current position.
+                    // Resetting to `p` (past the line already) made both
+                    // "insideSeen"/"outsideSeen" trivially true again right
+                    // after a count, so a passenger pausing at the door
+                    // (paying fare, tapping a card) could get double-counted
+                    // from ordinary jitter. Resetting to LINE forces a real,
+                    // fresh excursion past ORIGIN_MARGIN before the next
+                    // count can fire.
+                    st.lo = LINE; st.hi = LINE; st.centerReached = false
                     st.pendingDir = 0; st.pendingStreak = 0
                     st.recentP.clear()
                 }
@@ -197,7 +211,7 @@ class PassengerCounter {
                 st.pendingStreak++
                 if (st.pendingStreak >= CONFIRM_CROSS_FRAMES) {
                     countExit(door, "crossed", track.id, avgConf)
-                    st.lo = p; st.hi = p; st.centerReached = false
+                    st.lo = LINE; st.hi = LINE; st.centerReached = false
                     st.pendingDir = 0; st.pendingStreak = 0
                     st.recentP.clear()
                 }

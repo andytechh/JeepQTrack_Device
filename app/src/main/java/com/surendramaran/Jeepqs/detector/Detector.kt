@@ -339,11 +339,18 @@ class Detector(
         // getting through at this level, raise it back up gradually while
         // watching the live overlay - but don't raise it above what you
         // actually see real people scoring in your own footage.
-        private const val CONFIDENCE_THRESHOLD = 0.20F
+        private const val CONFIDENCE_THRESHOLD = 0.65F
         private const val IOU_THRESHOLD = 0.55F
 
-        private const val MIN_BOX_WIDTH = 0.04f
-        private const val MIN_BOX_HEIGHT = 0.04f
+        // Was 0.04f each (4% of frame) - small enough to let a hand or
+        // partial limb through as a "person". Raised so a box has to be
+        // closer to plausible full-person size under a top-mounted view.
+        // These are reasoned defaults, not measured against your real
+        // footage - if real people near frame edges start getting
+        // rejected, ease these back down using the live overlay to see
+        // real person box sizes at your camera's actual mount height.
+        private const val MIN_BOX_WIDTH = 0.08f
+        private const val MIN_BOX_HEIGHT = 0.08f
 
         private const val MIN_ASPECT_RATIO = 0.35f
         private const val MAX_ASPECT_RATIO = 2.8f
