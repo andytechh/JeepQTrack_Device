@@ -17,6 +17,10 @@ import com.surendramaran.Jeepqs.workers.LoadingCheckWorker
  * Manages both terminal geofences:
  * Donsol <-> Daraga.
  *
+ * Terminal coordinates + radius are NOT hardcoded here anymore. They come from
+ * TerminalRepository (Supabase `terminals` -> local cache -> built-in defaults),
+ * and the geofences are re-registered whenever the admin changes them.
+ *
  * ENTER:
  *   arrived -> grace period -> queue
  *
@@ -42,17 +46,15 @@ class GeofenceManager(
         var activeInstance: GeofenceManager? = null
             private set
 
-        val TERMINALS = mapOf(
-            1 to Pair(12.9032, 123.59425),
-            2 to Pair(13.14769, 123.71216)
-        )
+        // Computed from TerminalRepository so any other file reading these still compiles.
+        val TERMINALS: Map<Int, Pair<Double, Double>>
+            get() = TerminalRepository.all().mapValues { Pair(it.value.lat, it.value.lng) }
 
-        val TERMINAL_NAMES = mapOf(
-            1 to "Donsol Terminal",
-            2 to "Daraga Terminal"
-        )
+        val TERMINAL_NAMES: Map<Int, String>
+            get() = TerminalRepository.all().mapValues { it.value.name }
 
-        const val GEOFENCE_RADIUS = 50.0
+        fun radiusFor(terminalId: Int): Double =
+            (TerminalRepository.get(terminalId)?.radiusM ?: 100f).toDouble()
 
         // Set false before production/release.
         private const val DEBUG_TESTING_MODE = false
@@ -135,6 +137,12 @@ class GeofenceManager(
     private var arrivalRunnable: Runnable? = null
 
     private var waitingRunnable: Runnable? = null
+
+    // Called by TerminalRepository (main thread) when the admin changes a terminal.
+    private val terminalListener: (Map<Int, TerminalRepository.Terminal>) -> Unit = {
+        Log.i(TAG, "Terminal config changed -> re-registering geofences")
+        reloadGeofences()
+    }
 
 
     // ================================================================
@@ -266,14 +274,25 @@ class GeofenceManager(
 
         activeInstance = this
 
-        val geofences = TERMINALS.map { (id, latLng) ->
+        // cache -> immediate fetch -> poll every 60s; listener fires only on real changes.
+        TerminalRepository.addListener(terminalListener)
+        TerminalRepository.start(context, supabase)
+
+        registerGeofences()
+    }
+
+    private fun registerGeofences() {
+
+        if (!hasLocationPermission()) return
+
+        val geofences = TerminalRepository.all().values.map { t ->
 
             Geofence.Builder()
-                .setRequestId(requestIdForTerminal(id))
+                .setRequestId(requestIdForTerminal(t.id))
                 .setCircularRegion(
-                    latLng.first,
-                    latLng.second,
-                    GEOFENCE_RADIUS.toFloat()
+                    t.lat,
+                    t.lng,
+                    t.radiusM
                 )
                 .setTransitionTypes(
                     Geofence.GEOFENCE_TRANSITION_ENTER or
@@ -287,6 +306,7 @@ class GeofenceManager(
 
         val geofencingRequest =
             GeofencingRequest.Builder()
+                // If the phone is ALREADY inside a (new) geofence, fire ENTER immediately.
                 .setInitialTrigger(
                     GeofencingRequest.INITIAL_TRIGGER_ENTER
                 )
@@ -307,7 +327,7 @@ class GeofenceManager(
 
                 Log.d(
                     TAG,
-                    "Geofences registered for terminals: ${TERMINALS.keys}"
+                    "Geofences registered: ${TerminalRepository.all().values}"
                 )
             }
             .addOnFailureListener { e ->
@@ -322,7 +342,27 @@ class GeofenceManager(
             }
     }
 
+    /**
+     * Terminal config changed: drop the old circles and register the new ones.
+     */
+    private fun reloadGeofences() {
+
+        // Not registered yet: startGeofence()/registerGeofences() will read the latest values.
+        if (!isGeofenceRegistered) return
+
+        // The old circles are gone, so an EXIT will never arrive for them.
+        // INITIAL_TRIGGER_ENTER sets this back to true if we're inside a new circle.
+        isInsideTerminal = false
+
+        geofencingClient
+            .removeGeofences(GeofencePendingIntent.getPendingIntent(context))
+            .addOnCompleteListener { registerGeofences() }
+    }
+
     fun stopGeofence() {
+
+        TerminalRepository.removeListener(terminalListener)
+        TerminalRepository.stop()
 
         if (activeInstance === this) {
             activeInstance = null
@@ -1039,7 +1079,7 @@ class GeofenceManager(
     private fun terminalName(
         id: Int
     ): String =
-        TERMINAL_NAMES[id] ?: "Terminal $id"
+        TerminalRepository.name(id)
 
     private fun hasLocationPermission(): Boolean {
 

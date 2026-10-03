@@ -5,6 +5,7 @@ import android.content.Context
 import android.location.Location
 import androidx.work.*
 import com.surendramaran.Jeepqs.managers.GeofenceManager
+import com.surendramaran.Jeepqs.managers.TerminalRepository
 import com.surendramaran.Jeepqs.services.SMSService
 import com.surendramaran.Jeepqs.services.SupabaseService
 import com.surendramaran.Jeepqs.settings.DeviceConfig
@@ -24,6 +25,9 @@ import java.util.concurrent.TimeUnit
  * PeriodicWorkRequest, because Android enforces a 15-min minimum interval
  * for periodic work, which is too coarse for a 30-min window with a 5-min
  * warning built in.
+ *
+ * Terminal coordinates/radius come from TerminalRepository (Supabase -> cache
+ * -> defaults), so a terminal changed by the admin is respected here too.
  */
 class LoadingCheckWorker(
     appContext: Context,
@@ -63,6 +67,9 @@ class LoadingCheckWorker(
         val jeepneyId = DeviceConfig.getJeepId() ?: return Result.success()
         val supabase = SupabaseService(applicationContext)
 
+        // This worker may run in a fresh process: load cached terminals + one bounded fetch.
+        TerminalRepository.refreshBlocking(applicationContext, supabase)
+
         val status = supabase.getCurrentStatusBlocking(jeepneyId)
         if (status != "loading") {
             // Nothing to enforce right now; GeofenceManager (if alive) owns the rest of the lifecycle.
@@ -99,11 +106,11 @@ class LoadingCheckWorker(
     }
 
     private fun isNearTerminal(supabase: SupabaseService, jeepneyId: String, terminalId: Int): Boolean {
-        val terminalLatLng = GeofenceManager.TERMINALS[terminalId] ?: return true // fail safe
+        val terminal = TerminalRepository.get(terminalId) ?: return true // fail safe
         val gps = supabase.getLatestGpsBlocking(jeepneyId) ?: return true // fail safe: no fix, assume still there
         val result = FloatArray(1)
-        Location.distanceBetween(gps.first, gps.second, terminalLatLng.first, terminalLatLng.second, result)
-        return result[0] <= GeofenceManager.GEOFENCE_RADIUS
+        Location.distanceBetween(gps.first, gps.second, terminal.lat, terminal.lng, result)
+        return result[0] <= terminal.radiusM
     }
 
     private fun alertAlreadySent(loadingStartedAt: Long): Boolean {
@@ -124,13 +131,12 @@ class LoadingCheckWorker(
         supabase.getJeepInfo { info ->
             if (info != null) {
                 val smsService = SMSService(applicationContext, supabase)
-                val terminalName = GeofenceManager.TERMINAL_NAMES[terminalId] ?: "Terminal $terminalId"
                 smsService.notifyLoadingAlert(
                     jeepneyId = jeepneyId,
                     plateNumber = info.plateNumber,
                     jeepName = info.jeepName,
                     driverName = info.driverName,
-                    terminalName = terminalName,
+                    terminalName = TerminalRepository.name(terminalId),
                     minutes = GeofenceManager.ALERT_THRESHOLD,
                     terminalId = terminalId,
                     bracket = info.bracket

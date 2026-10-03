@@ -14,6 +14,7 @@ import org.json.JSONObject
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
+import com.surendramaran.Jeepqs.managers.TerminalRepository
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -291,6 +292,20 @@ class SupabaseService(
 
         executeRequest(request, callback)
     }
+    fun completeTrip(jeepneyId: String, totalPassengers: Int, callback: (Boolean) -> Unit) {
+        val json = JsonObject().apply {
+            addProperty("p_jeepney_id", jeepneyId)
+            addProperty("p_total_passengers", totalPassengers)
+        }
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/rpc/complete_trip")
+            .post(json.toString().toRequestBody(JSON))
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .addHeader("Content-Type", "application/json")
+            .build()
+        executeRequest(request, callback)
+    }
 
     // ─── JEEPNEY INFO ─────────────────────────────────────────────────
 
@@ -352,6 +367,41 @@ class SupabaseService(
                 }
                 callback(null)
             } catch (_: Exception) {
+                callback(null)
+            }
+        }
+    }
+    // ─── TERMINALS (dynamic geofence config) ──────────────────────────
+
+    fun getTerminals(callback: (List<TerminalRepository.Terminal>?) -> Unit) {
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/terminals?select=id,name,lat,lng,radius_m&order=id.asc")
+            .get()
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        executeRequestWithBody(request) { body ->
+            try {
+                if (body.isNullOrEmpty()) { callback(null); return@executeRequestWithBody }
+                val arr = JSONArray(body)
+                val list = (0 until arr.length()).mapNotNull { i ->
+                    val o = arr.getJSONObject(i)
+                    val id = o.optInt("id", -1)
+                    val lat = o.optDouble("lat")
+                    val lng = o.optDouble("lng")
+                    if (id !in 1..2 || lat.isNaN() || lng.isNaN()) null
+                    else TerminalRepository.Terminal(
+                        id = id,
+                        name = o.optString("name", "Terminal $id"),
+                        lat = lat,
+                        lng = lng,
+                        radiusM = o.optInt("radius_m", 100).coerceIn(30, 1000).toFloat()
+                    )
+                }
+                callback(list.ifEmpty { null })
+            } catch (e: Exception) {
+                Log.e(TAG, "getTerminals parse failed, body=$body", e)
                 callback(null)
             }
         }
@@ -994,25 +1044,6 @@ class SupabaseService(
     // ============================================================
     // NEW METHODS FOR TRIP, GPS, STATUS, AND DEPARTURE
     // ============================================================
-
-    fun createTrip(jeepneyId: String, route: String, passengers: Int, callback: (Boolean) -> Unit) {
-        val json = JsonObject().apply {
-            addProperty("jeepney_id", jeepneyId)
-            addProperty("route", route)
-            addProperty("status", "in_progress")
-            addProperty("passengers", passengers)
-            addProperty("started_at", timestamp())
-        }
-        val request = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/trips")
-            .post(json.toString().toRequestBody(JSON))
-            .addHeader("apikey", SUPABASE_KEY)
-            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Prefer", "return=minimal")
-            .build()
-        executeRequest(request, callback)
-    }
 
     fun getLatestGps(jeepneyId: String, callback: (Pair<Double, Double>?) -> Unit) {
         val request = Request.Builder()

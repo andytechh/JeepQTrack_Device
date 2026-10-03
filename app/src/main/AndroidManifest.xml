@@ -20,6 +20,12 @@
     <!-- Required if geofencing/location must continue in background -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
+    <!-- NEW: background trip tracking (TripTrackingService) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Phone state -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
@@ -65,6 +71,14 @@
         <activity
             android:name=".MainActivity"
             android:exported="false" />
+
+        <!-- NEW: keeps GPS + trip upload running with screen off / app in background.
+             stopWithTask=false: keeps running if the app is swiped from recents. -->
+        <service
+            android:name=".services.TripTrackingService"
+            android:exported="false"
+            android:foregroundServiceType="location"
+            android:stopWithTask="false" />
 
         <!-- Geofence transition receiver -->
         <receiver

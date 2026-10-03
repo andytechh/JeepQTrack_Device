@@ -37,8 +37,7 @@ class PassengerCounter {
     // that. Re-tune using real avgConf values from the "COUNT" logcat
     // trace: set it a bit below what real people show, and above what
     // hand/bag false positives show, once you have both from real footage.
-    private val MIN_AVG_CONFIDENCE = 0.35f
-
+    private val MIN_AVG_CONFIDENCE = 0.60f
     // NEW - separate, stricter persistence requirement just for counting
     // eligibility (tracking/drawing still only needs CentroidTracker's
     // own CONFIRM_FRAMES). A hand or bag passing quickly through frame
@@ -77,9 +76,17 @@ class PassengerCounter {
     var rearExited = 0
         private set
 
-    val inside: Int
-        get() = (boarded - exited).coerceAtLeast(0)
+    // (a) add below: private val states = mutableMapOf<Int, State>()
+    private var baseOccupancy = 0
 
+    // (b) replace the existing `inside` property:
+    val inside: Int
+        get() = (baseOccupancy + boarded - exited).coerceAtLeast(0)
+
+    // (c) add this function, and add `baseOccupancy = 0` inside your existing reset():
+    fun restoreOccupancy(count: Int) {
+        baseOccupancy = count.coerceAtLeast(0)
+    }
     private fun position(track: CentroidTracker.Track): Float {
         val raw = if (TRAVEL_ALONG_Y) track.cy else track.cx
         return if (OUTSIDE_IS_LOW) raw else 1f - raw

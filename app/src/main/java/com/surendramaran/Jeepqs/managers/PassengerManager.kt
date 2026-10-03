@@ -56,7 +56,9 @@ class PassengerManager {
         tracker.clear()
         passengerCounter.reset()
     }
-
+    fun restoreOccupancy(count: Int) {
+        passengerCounter.restoreOccupancy(count)   // use your actual PassengerCounter field name
+    }
     data class PassengerData(
         val inside: Int,
         val boarded: Int,
